@@ -161,3 +161,32 @@ begin
   reset role;
   raise notice 'OK: Head Coach, un expediente por persona, checador entre sucursales, conceptos, revocación, horarios y checador';
 end $$;
+
+-- 0010: descuentos
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        emp uuid := (select id from public.employees where full_name = 'Coach 1');
+        d1 uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.deductions (company_id, employee_id, label, amount_cents, kind, start_date, reason, status)
+    values (car, emp, 'Uniforme', 35000, 'unico', current_date, 'uniforme extraviado', 'autorizado') returning id into d1;
+  if (select status from public.deductions where id = d1) <> 'pendiente' then raise exception 'se capturó ya autorizado'; end if;
+  ok := false; begin update public.deductions set status = 'autorizado' where id = d1; exception when others then ok := true; end;
+  if not ok then raise exception 'el capturista se autorizó a sí mismo'; end if;
+  ok := false; begin update public.deductions set amount_cents = 1 where id = d1; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó el importe'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  update public.deductions set status = 'autorizado', decision_note = 'ok' where id = d1;
+  if (select decided_by from public.deductions where id = d1) <> dir then raise exception 'no registró quién autorizó'; end if;
+  update public.deductions set status = 'cancelado' where id = d1;
+  ok := false; begin update public.deductions set status = 'autorizado' where id = d1; exception when others then ok := true; end;
+  if not ok then raise exception 'se reactivó un cancelado'; end if;
+  reset role;
+  raise notice 'OK: descuentos (capturar, autorizar por otra persona, cancelar, no editar)';
+end $$;

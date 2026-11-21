@@ -18,9 +18,24 @@ test('por hora: minutos pagados × tarifa', () => {
   assert.equal(r[0].amountCents, 200000n);   // 20 h × $100
   assert.equal(r[0].detail, '20 h 0 min');
 });
-test('fijo semanal: monto completo del periodo', () => {
-  const r = conceptEarnings([{ key: 'fijo', label: 'Sueldo fijo', kind: 'fijo', amountCents: 180000n, weekdays: [1, 2, 3, 4, 5] }], semana);
-  assert.equal(r[0].amountCents, 180000n);
+const LUN_SAB = [1, 2, 3, 4, 5, 6];
+const fijo1800: Concept = { key: 'fijo', label: 'Sueldo fijo', kind: 'fijo', amountCents: 180000n, weekdays: LUN_SAB };
+test('fijo semanal lun–sáb $1,800 sin faltas → $1,800', () => {
+  assert.equal(conceptEarnings([fijo1800], semana)[0].amountCents, 180000n);   // falta solo el domingo, que no cubre
+});
+test('fijo $1,800 con 1 falta → $1,500; falta justificada no descuenta', () => {
+  const unaFalta = semana.map(d => d.date === '2026-11-18' ? { ...d, attended: false } : d);
+  const r = conceptEarnings([fijo1800], unaFalta)[0];
+  assert.equal(r.amountCents, 150000n); assert.match(r.detail, /1 falta/);
+  const justificada = semana.map(d => d.date === '2026-11-18' ? { ...d, attended: false, excused: true } : d);
+  assert.equal(conceptEarnings([fijo1800], justificada)[0].amountCents, 180000n);
+});
+test('portero: una sola entrada y salida cuenta el día para portero y limpieza', () => {
+  const dia: WorkDay[] = [{ date: '2026-11-16', paidMinutes: 0, attended: true }];   // checó 13:00 y 19:15
+  const r = conceptEarnings([
+    { key: 'portero', label: 'Portero', kind: 'por_dia', amountCents: 25000n, weekdays: [0, 1, 2, 3, 4, 5, 6] },
+    { key: 'limpieza', label: 'Limpieza', kind: 'por_dia', amountCents: 15000n, weekdays: [1, 2, 3, 4, 5] }], dia);
+  assert.equal(r.reduce((n, x) => n + x.amountCents, 0n), 40000n);
 });
 test('mezcla: fijo + por hora en la misma persona', () => {
   const r = conceptEarnings([

@@ -200,6 +200,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
         </form>
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
+        {emp && can('payroll') && <DeductionsPanel emp={emp} />}
       </div>
     </div>
   );
@@ -249,7 +250,7 @@ function SalaryPanel({ emp }: { emp: Emp }) {
       {current.map(r => (
         <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
           <b>{r.label}</b><span>{formatMXN(r.amount_cents)} {KIND_LABEL[r.kind]}</span>
-          {r.kind !== 'fijo' && <span className="text-xs text-slate-500">{r.weekdays.length === 7 ? 'todos los días' : r.weekdays.map(d => DAYS[d]).join(', ')}</span>}
+          {<span className="text-xs text-slate-500">{r.weekdays.length === 7 ? 'todos los días' : r.weekdays.map(d => DAYS[d]).join(', ')}</span>}
           <span className="text-xs text-slate-400">desde {r.effective_from}</span>
           {can('salary', 'edit') && <span className="ml-auto space-x-3 text-xs">
             <button className="text-brand" onClick={() => setEdit(r)}>Cambiar</button>
@@ -276,23 +277,23 @@ function ConceptForm({ emp, base, onDone, onCancel }: { emp: Emp; base: ConceptR
     e.preventDefault(); setMsg(null);
     const cents = pesosToCents(amount);
     if (cents === null) return setMsg('Importe inválido. Usa números, por ejemplo 120 o 120.50');
-    if (kind !== 'fijo' && days.length === 0) return setMsg('Marca al menos un día.');
+    if (days.length === 0) return setMsg('Marca al menos un día.');
     if (!window.confirm(`¿Registrar "${label}" de ${formatMXN(cents)} ${KIND_LABEL[kind]} desde el ${from}? No se puede borrar después; para corregir se registra otro cambio.`)) return;
     const { error } = await supabase.from('compensation_concepts').insert({ company_id: emp.company_id, employee_id: emp.id,
       concept_key: base?.concept_key ?? slug(label), label: label.trim(), kind, amount_cents: cents,
-      weekdays: kind === 'fijo' ? [0, 1, 2, 3, 4, 5, 6] : [...days].sort((a, b) => a - b), effective_from: from, reason: reason.trim() });
+      weekdays: [...days].sort((a, b) => a - b), effective_from: from, reason: reason.trim() });
     if (error) return setMsg(error.message.includes('duplicate') ? 'Ya existe un concepto con ese nombre y fecha. Usa otro nombre o fecha.' : error.message);
     onDone();
   }
   return (
     <form onSubmit={save} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
       <label className="text-xs">Concepto<input required disabled={!!base} className={field} placeholder="Ej. Portero, Limpieza, Clases" value={label} onChange={e => setLabel(e.target.value)} /></label>
-      <label className="text-xs">Tipo<select className={field} value={kind} onChange={e => setKind(e.target.value as Kind)}>
+      <label className="text-xs">Tipo<select className={field} value={kind} onChange={e => { const k = e.target.value as Kind; setKind(k); if (k === 'fijo' && !base) setDays([1, 2, 3, 4, 5, 6]); }}>
         <option value="por_hora">Por hora trabajada</option><option value="por_dia">Por día asistido</option><option value="fijo">Fijo por periodo (semana o quincena)</option></select></label>
       <label className="text-xs">Importe ($){kind === 'por_hora' ? ' por hora' : kind === 'por_dia' ? ' por día' : ' por periodo'}
         <input required inputMode="decimal" className={field} value={amount} onChange={e => setAmount(e.target.value)} /></label>
       <label className="text-xs">Vigente desde<input type="date" required className={field} value={from} onChange={e => setFrom(e.target.value)} /></label>
-      {kind !== 'fijo' && <fieldset className="text-xs sm:col-span-2"><legend>Días en que aplica</legend><div className="mt-1 flex flex-wrap gap-3">
+      {<fieldset className="text-xs sm:col-span-2"><legend>{kind === 'fijo' ? 'Días que cubre (cada falta injustificada en estos días descuenta la parte proporcional)' : 'Días en que aplica'}</legend><div className="mt-1 flex flex-wrap gap-3">
         {DAYS.map((d, i) => <label key={i} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={days.includes(i)}
           onChange={e => setDays(w => e.target.checked ? [...w, i] : w.filter(x => x !== i))} />{d}</label>)}</div></fieldset>}
       <label className="text-xs sm:col-span-2">Motivo<input required className={field} value={reason} onChange={e => setReason(e.target.value)} /></label>
@@ -337,6 +338,80 @@ function HeadCoachPanel({ emp }: { emp: Emp }) {
         })}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+    </div>
+  );
+}
+
+type DStatus = 'pendiente' | 'autorizado' | 'rechazado' | 'cancelado';
+interface DRow { id: string; label: string; amount_cents: number; kind: 'unico' | 'recurrente'; start_date: string; end_date: string | null;
+  reason: string; status: DStatus; created_by: string; created_at: string; decision_note: string | null }
+const DBADGE: Record<DStatus, string> = { pendiente: 'bg-amber-100 text-amber-700', autorizado: 'bg-green-100 text-green-700',
+  rechazado: 'bg-slate-200 text-slate-600', cancelado: 'bg-slate-200 text-slate-600' };
+
+/** Descuentos: se capturan pendientes y otra persona con permiso de autorizar los aprueba (el director puede ambos). */
+function DeductionsPanel({ emp }: { emp: Emp }) {
+  const { can, user } = useAuth();
+  const [rows, setRows] = useState<DRow[]>([]);
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ label: '', amount: '', kind: 'unico' as 'unico' | 'recurrente', start: new Date().toLocaleDateString('en-CA'), end: '', reason: '' });
+  const [msg, setMsg] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.from('deductions').select('id,label,amount_cents,kind,start_date,end_date,reason,status,created_by,created_at,decision_note')
+      .eq('employee_id', emp.id).order('created_at', { ascending: false });
+    if (error) setMsg(error.message); else setRows((data as DRow[]) ?? []);
+  }, [emp.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault(); setMsg(null);
+    const cents = pesosToCents(f.amount);
+    if (cents === null || cents === 0) return setMsg('Importe inválido.');
+    const { error } = await supabase.from('deductions').insert({ company_id: emp.company_id, employee_id: emp.id, label: f.label.trim(),
+      amount_cents: cents, kind: f.kind, start_date: f.start, end_date: f.kind === 'recurrente' && f.end ? f.end : null, reason: f.reason.trim() });
+    if (error) return setMsg(error.message);
+    setOpen(false); setF({ ...f, label: '', amount: '', reason: '' }); load();
+  }
+  async function decide(r: DRow, status: DStatus) {
+    const verb = { autorizado: 'autorizar', rechazado: 'rechazar', cancelado: 'cancelar', pendiente: '' }[status];
+    const note = window.prompt(`¿${verb[0].toUpperCase() + verb.slice(1)} "${r.label}" de ${formatMXN(r.amount_cents)}? Nota (opcional):`);
+    if (note === null) return;
+    const { data, error } = await supabase.from('deductions').update({ status, decision_note: note.trim() || null }).eq('id', r.id).select('id');
+    if (error) return setMsg(error.message);
+    if (!data?.length) return setMsg('No se aplicó: no tienes permiso para esta operación.');
+    load();
+  }
+  const canAuth = can('payroll', 'authorize');
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <div className="flex items-center"><h4 className="text-sm font-semibold">Descuentos</h4>
+        {can('payroll', 'edit') && <button className="ml-auto text-sm text-brand" onClick={() => setOpen(!open)}>+ Nuevo descuento</button>}</div>
+      <p className="text-xs text-slate-500">Solo se aplican los autorizados. Quien captura un descuento no puede autorizarlo (salvo el director). No incluye préstamos ni la rebaja por retardo.</p>
+      {open && (
+        <form onSubmit={add} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
+          <label className="text-xs">Concepto<input required className={field} placeholder="Ej. Uniforme" value={f.label} onChange={e => setF({ ...f, label: e.target.value })} /></label>
+          <label className="text-xs">Importe ($)<input required inputMode="decimal" className={field} value={f.amount} onChange={e => setF({ ...f, amount: e.target.value })} /></label>
+          <label className="text-xs">Tipo<select className={field} value={f.kind} onChange={e => setF({ ...f, kind: e.target.value as 'unico' | 'recurrente' })}>
+            <option value="unico">Una sola vez</option><option value="recurrente">Cada periodo de pago</option></select></label>
+          <label className="text-xs">{f.kind === 'unico' ? 'Se aplica en el periodo que incluye' : 'Desde'}<input type="date" required className={field} value={f.start} onChange={e => setF({ ...f, start: e.target.value })} /></label>
+          {f.kind === 'recurrente' && <label className="text-xs">Hasta (opcional)<input type="date" min={f.start} className={field} value={f.end} onChange={e => setF({ ...f, end: e.target.value })} /></label>}
+          <label className="text-xs sm:col-span-2">Motivo<input required className={field} value={f.reason} onChange={e => setF({ ...f, reason: e.target.value })} /></label>
+          <div className="sm:col-span-2"><button className="rounded-lg border border-brand px-3 py-2 text-sm text-brand">Capturar (queda pendiente)</button></div>
+        </form>)}
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+      {rows.map(r => (
+        <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+          <b>{r.label}</b><span>{formatMXN(r.amount_cents)}</span>
+          <span className="text-xs text-slate-500">{r.kind === 'unico' ? `una vez (${r.start_date})` : `cada periodo desde ${r.start_date}${r.end_date ? ` hasta ${r.end_date}` : ''}`}</span>
+          <span className={`rounded-full px-2 py-0.5 text-xs ${DBADGE[r.status]}`}>{r.status}</span>
+          <span className="text-xs text-slate-400">{r.reason}{r.decision_note ? ` · ${r.decision_note}` : ''}</span>
+          <span className="ml-auto space-x-3 text-xs">
+            {r.status === 'pendiente' && canAuth && (r.created_by !== user?.id || user?.role === 'director') && <>
+              <button className="text-green-700" onClick={() => decide(r, 'autorizado')}>Autorizar</button>
+              <button className="text-red-700" onClick={() => decide(r, 'rechazado')}>Rechazar</button></>}
+            {r.status === 'autorizado' && (can('payroll', 'edit') || canAuth) && <button className="text-red-700" onClick={() => decide(r, 'cancelado')}>Cancelar</button>}
+          </span>
+        </div>))}
     </div>
   );
 }
