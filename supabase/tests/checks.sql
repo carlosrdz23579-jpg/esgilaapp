@@ -20,3 +20,49 @@ begin
     then raise exception 'calendario efectivo'; end if;
   raise notice 'OK: todas las verificaciones pasaron';
 end $$;
+
+-- 0007: reglas de edición/cancelación probadas como el administrador (no back-office).
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        co uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        fut uuid; vig uuid; hoy date := app.today_mx();
+        ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  perform set_config('request.jwt.claims', json_build_object('sub', admin, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+
+  insert into public.pay_schedules (company_id, scope, frequency, monthly_day, effective_from, reason)
+    values (co, 'empresa', 'mensual', 31, hoy + 10, 'prueba futura') returning id into fut;
+  update public.pay_schedules set monthly_day = 30 where id = fut;                        -- editar programado: OK
+  if (select monthly_day from public.pay_schedules where id = fut) <> 30 then raise exception 'no editó el programado'; end if;
+
+  ok := false; begin update public.pay_schedules set effective_from = hoy - 1 where id = fut;
+  exception when others then ok := true; end;
+  if not ok then raise exception 'permitió mover un programado al pasado'; end if;
+
+  update public.pay_schedules set cancelled_at = now(), cancel_reason = 'error de captura' where id = fut;   -- cancelar: OK
+  if (select cancelled_by from public.pay_schedules where id = fut) <> admin then raise exception 'no registró quién canceló'; end if;
+
+  vig := (select id from public.pay_schedules where company_id = co and scope = 'empresa' and cancelled_at is null and effective_from <= hoy limit 1);
+  ok := false; begin update public.pay_schedules set biweekly_day_1 = 10 where id = vig;
+  exception when others then ok := true; end;
+  if not ok then raise exception 'permitió editar un calendario vigente'; end if;
+
+  ok := false; begin update public.pay_schedules set cancelled_at = now(), cancel_reason = 'x' where id = vig;
+  exception when others then ok := true; end;
+  if not ok then raise exception 'permitió cancelar un calendario vigente'; end if;
+
+  ok := false; begin update public.pay_schedules set effective_to = hoy - 1 where id = vig;
+  exception when others then ok := true; end;
+  if not ok then raise exception 'permitió terminar en el pasado'; end if;
+
+  ok := false; begin delete from public.pay_schedules where id = vig;
+  exception when others then ok := true; end;
+  -- sin política DELETE, RLS no borra nada aunque no lance error:
+  if not exists (select 1 from public.pay_schedules where id = vig) then raise exception 'se pudo borrar'; end if;
+
+  update public.pay_schedules set effective_to = hoy + 30 where id = vig;                 -- terminar: OK
+  reset role;
+  raise notice 'OK: reglas de 0007 (editar programado, cancelar, terminar, no borrar)';
+end $$;

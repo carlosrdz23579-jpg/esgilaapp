@@ -21,7 +21,7 @@ export interface Schedule {
   id: string; company_id: string; scope: Scope; department_id: string | null; group_id: string | null; employee_id: string | null;
   frequency: Frequency; weekly_weekday: number | null; biweekly_day_1: number | null; biweekly_day_2: number | null;
   monthly_day: number | null; weekend_rule: WeekendRule; cutoff: Cutoff; effective_from: string; effective_to: string | null;
-  reason: string; created_at: string;
+  reason: string; created_at: string; cancelled_at: string | null; cancel_reason: string | null;
 }
 const SCOPE_RANK: Record<Scope, number> = { empleado: 1, grupo: 2, departamento: 3, empresa: 4 };
 
@@ -47,7 +47,7 @@ export function describe(s: Pick<Schedule, 'frequency' | 'weekly_weekday' | 'biw
 /** Calendario que aplica a un empleado en una fecha (misma prioridad que app.effective_schedule en SQL). */
 export function effectiveFor(scheds: Schedule[], emp: Pick<EmpLite, 'id' | 'department_id' | 'group_id'>, date: string): Schedule | undefined {
   return scheds
-    .filter(s => s.effective_from <= date && (!s.effective_to || s.effective_to >= date))
+    .filter(s => !s.cancelled_at && s.effective_from <= date && (!s.effective_to || s.effective_to >= date))
     .filter(s => (s.scope === 'empleado' && s.employee_id === emp.id) || (s.scope === 'grupo' && s.group_id === emp.group_id)
       || (s.scope === 'departamento' && s.department_id === emp.department_id) || s.scope === 'empresa')
     .sort((a, b) => SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] || b.effective_from.localeCompare(a.effective_from) || b.created_at.localeCompare(a.created_at))[0];
@@ -149,7 +149,7 @@ function Schedules({ companyId }: { companyId: string }) {
   const [scheds, setScheds] = useState<Schedule[]>([]);
   const [depts, setDepts] = useState<Dept[]>([]); const [groups, setGroups] = useState<Group[]>([]); const [emps, setEmps] = useState<EmpLite[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<Schedule | 'new' | null>(null);
 
   const load = useCallback(async () => {
     setMsg(null);
@@ -171,10 +171,30 @@ function Schedules({ companyId }: { companyId: string }) {
       : s.scope === 'grupo' ? `Grupo ${groups.find(g => g.id === s.group_id)?.name ?? '—'}`
       : `Empleado: ${emps.find(x => x.id === s.employee_id)?.full_name ?? '—'}`;
   const t = today();
-  const status = (s: Schedule) => (s.effective_to && s.effective_to < t ? 'terminado' : s.effective_from > t ? 'programado' : 'vigente');
+  const status = (s: Schedule) => (s.cancelled_at ? 'cancelado' : s.effective_to && s.effective_to < t ? 'terminado' : s.effective_from > t ? 'programado' : 'vigente');
+  const canConfig = can('pay_schedules', 'configure');
+
+  async function cancel(s: Schedule) {
+    const motivo = window.prompt(`Cancelar "${target(s)}" (${s.effective_from}). No se borra: queda marcado como cancelado.\n\nMotivo de la cancelación:`);
+    if (motivo === null) return;
+    if (!motivo.trim()) return setMsg('El motivo de cancelación es obligatorio.');
+    const { data, error } = await supabase.from('pay_schedules').update({ cancelled_at: new Date().toISOString(), cancel_reason: motivo.trim() }).eq('id', s.id).select('id');
+    if (error) return setMsg(error.message);
+    if (!data?.length) return setMsg('No se aplicó: no tienes permiso para esta operación.');
+    load();
+  }
+  async function finish(s: Schedule) {
+    const fin = window.prompt(`Terminar "${target(s)}". Último día en que aplica (AAAA-MM-DD, hoy o después). Lo ya pagado no cambia:`, t);
+    if (fin === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fin) || fin < t) return setMsg('La fecha de fin debe ser hoy o posterior, con formato AAAA-MM-DD.');
+    const { data, error } = await supabase.from('pay_schedules').update({ effective_to: fin }).eq('id', s.id).select('id');
+    if (error) return setMsg(error.message);
+    if (!data?.length) return setMsg('No se aplicó: no tienes permiso para esta operación.');
+    load();
+  }
 
   // Próximos pagos de la empresa, por tipo de horario, con el calendario general vigente.
-  const general = scheds.find(s => s.scope === 'empresa' && status(s) === 'vigente');
+  const general = scheds.filter(s => s.scope === 'empresa' && status(s) === 'vigente').sort((a, b) => b.effective_from.localeCompare(a.effective_from))[0];
   const upcoming = useMemo(() => {
     if (!general) return null;
     const mk = (wd: number[]) => periodsBetween(toConfig(general, wd), t, addDays(t, 75)).slice(0, 4);
@@ -197,40 +217,49 @@ function Schedules({ companyId }: { companyId: string }) {
           </div>
         </div>)}
       <div className="flex items-center">
-        <p className="text-xs text-slate-500">Prioridad: empleado → grupo → departamento → empresa. Los cambios no se editan ni borran: cada uno queda como un registro nuevo.</p>
-        {can('pay_schedules', 'configure') && <button className={`${btn} ml-auto shrink-0`} onClick={() => setCreating(true)}>Cambiar calendario</button>}
+        <p className="text-xs text-slate-500">Prioridad: empleado → grupo → departamento → empresa. Un cambio programado se puede editar o cancelar; uno vigente solo se puede terminar, para no alterar quincenas ya pagadas. Nada se borra.</p>
+        {canConfig && <button className={`${btn} ml-auto shrink-0`} onClick={() => setCreating('new')}>Cambiar calendario</button>}
       </div>
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-            <tr><th className="px-3 py-2">Aplica a</th><th className="px-3 py-2">Calendario</th><th className="px-3 py-2">Vigencia</th><th className="px-3 py-2">Motivo</th><th className="px-3 py-2">Estado</th></tr>
+            <tr><th className="px-3 py-2">Aplica a</th><th className="px-3 py-2">Calendario</th><th className="px-3 py-2">Vigencia</th><th className="px-3 py-2">Motivo</th><th className="px-3 py-2">Estado</th><th /></tr>
           </thead>
           <tbody>
             {scheds.map(s => (
-              <tr key={s.id} className="border-t align-top">
+              <tr key={s.id} className={`border-t align-top ${s.cancelled_at ? 'text-slate-400 line-through decoration-slate-300' : ''}`}>
                 <td className="px-3 py-2 font-medium">{target(s)}</td><td className="px-3 py-2 text-xs">{describe(s)}</td>
                 <td className="px-3 py-2 text-xs">{s.effective_from} → {s.effective_to ?? 'permanente'}</td>
-                <td className="px-3 py-2 text-xs">{s.reason}</td>
+                <td className="px-3 py-2 text-xs">{s.reason}{s.cancel_reason && <span className="block no-underline">Cancelado: {s.cancel_reason}</span>}</td>
                 <td className="px-3 py-2 text-xs">{status(s)}</td>
+                <td className="space-x-2 whitespace-nowrap px-3 py-2 text-right text-xs">
+                  {canConfig && status(s) === 'programado' && <>
+                    <button className="text-brand" onClick={() => setCreating(s)}>Editar</button>
+                    <button className="text-red-700" onClick={() => cancel(s)}>Cancelar</button></>}
+                  {canConfig && status(s) === 'vigente' && <button className="text-amber-700" onClick={() => finish(s)}>Terminar</button>}
+                </td>
               </tr>))}
-            {scheds.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">Esta empresa no tiene calendario de pago.</td></tr>}
+            {scheds.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">Esta empresa no tiene calendario de pago.</td></tr>}
           </tbody>
         </table>
       </div>
-      {creating && <ScheduleForm companyId={companyId} scheds={scheds} depts={depts} groups={groups} emps={emps}
-        onClose={() => setCreating(false)} onSaved={() => { setCreating(false); load(); }} />}
+      {creating && <ScheduleForm existing={creating === 'new' ? null : creating} companyId={companyId} scheds={scheds} depts={depts} groups={groups} emps={emps}
+        onClose={() => setCreating(null)} onSaved={() => { setCreating(null); load(); }} />}
     </div>
   );
 }
 
-function ScheduleForm({ companyId, scheds, depts, groups, emps, onClose, onSaved }:
-  { companyId: string; scheds: Schedule[]; depts: Dept[]; groups: Group[]; emps: EmpLite[]; onClose: () => void; onSaved: () => void }) {
-  const [scope, setScope] = useState<Scope>('empresa'); const [targetId, setTargetId] = useState('');
-  const [frequency, setFrequency] = useState<Frequency>('quincenal');
-  const [weekday, setWeekday] = useState(6); const [d1, setD1] = useState(15); const [d2, setD2] = useState(31); const [md, setMd] = useState(31);
-  const [rule, setRule] = useState<WeekendRule>('antes'); const [cutoff, setCutoff] = useState<Cutoff>('dia_anterior');
-  const [from, setFrom] = useState(today()); const [temporal, setTemporal] = useState(false); const [to, setTo] = useState('');
-  const [reason, setReason] = useState(''); const [review, setReview] = useState(false);
+function ScheduleForm({ existing, companyId, scheds, depts, groups, emps, onClose, onSaved }:
+  { existing: Schedule | null; companyId: string; scheds: Schedule[]; depts: Dept[]; groups: Group[]; emps: EmpLite[]; onClose: () => void; onSaved: () => void }) {
+  const x = existing;
+  const [scope, setScope] = useState<Scope>(x?.scope ?? 'empresa');
+  const [targetId, setTargetId] = useState(x ? (x.employee_id ?? x.group_id ?? x.department_id ?? '') : '');
+  const [frequency, setFrequency] = useState<Frequency>(x?.frequency ?? 'quincenal');
+  const [weekday, setWeekday] = useState(x?.weekly_weekday ?? 6); const [d1, setD1] = useState(x?.biweekly_day_1 ?? 15);
+  const [d2, setD2] = useState(x?.biweekly_day_2 ?? 31); const [md, setMd] = useState(x?.monthly_day ?? 31);
+  const [rule, setRule] = useState<WeekendRule>(x?.weekend_rule ?? 'antes'); const [cutoff, setCutoff] = useState<Cutoff>(x?.cutoff ?? 'dia_anterior');
+  const [from, setFrom] = useState(x?.effective_from ?? today()); const [temporal, setTemporal] = useState(!!x?.effective_to);
+  const [to, setTo] = useState(x?.effective_to ?? ''); const [reason, setReason] = useState(x?.reason ?? ''); const [review, setReview] = useState(false);
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
 
   const draft = {
@@ -243,9 +272,10 @@ function ScheduleForm({ companyId, scheds, depts, groups, emps, onClose, onSaved
     || (scope === 'grupo' && e.group_id === targetId) || (scope === 'empleado' && e.id === targetId);
   const affected = emps.filter(inScope);
   // Quienes tienen un calendario más específico vigente no cambian (sus excepciones se conservan).
-  const keepOwn = affected.filter(e => { const cur = effectiveFor(scheds, e, from); return cur && SCOPE_RANK[cur.scope] < SCOPE_RANK[scope]; });
+  const keepOwn = affected.filter(e => { const cur = effectiveFor(scheds.filter(s => s.id !== x?.id), e, from); return cur && SCOPE_RANK[cur.scope] < SCOPE_RANK[scope]; });
   const sample = affected.find(e => !keepOwn.includes(e));
-  const before = sample ? effectiveFor(scheds, sample, from) : scheds.find(s => s.scope === 'empresa');
+  const others = scheds.filter(s => s.id !== x?.id);
+  const before = sample ? effectiveFor(others, sample, from) : others.find(s => s.scope === 'empresa' && !s.cancelled_at);
 
   let preview: { start: string; end: string; payDate: string }[] = []; let previewErr: string | null = null;
   try { preview = periodsBetween(toConfig(draft, sample?.work_days), from, addDays(from, 75)).slice(0, 4); }
@@ -263,14 +293,17 @@ function ScheduleForm({ companyId, scheds, depts, groups, emps, onClose, onSaved
 
   async function confirm() {
     setBusy(true); setMsg(null);
-    const { error } = await supabase.from('pay_schedules').insert({
-      company_id: companyId, scope, ...draft,
-      department_id: scope === 'departamento' ? targetId : scope === 'grupo' ? groups.find(g => g.id === targetId)?.department_id ?? null : null,
-      group_id: scope === 'grupo' ? targetId : null, employee_id: scope === 'empleado' ? targetId : null,
-      effective_from: from, effective_to: temporal ? to : null, reason: reason.trim(),
-    });
+    const common = { ...draft, effective_from: from, effective_to: temporal ? to : null, reason: reason.trim() };
+    const { data, error } = x
+      ? await supabase.from('pay_schedules').update(common).eq('id', x.id).select('id')
+      : await supabase.from('pay_schedules').insert({
+          company_id: companyId, scope, ...common,
+          department_id: scope === 'departamento' ? targetId : scope === 'grupo' ? groups.find(g => g.id === targetId)?.department_id ?? null : null,
+          group_id: scope === 'grupo' ? targetId : null, employee_id: scope === 'empleado' ? targetId : null,
+        }).select('id');
     setBusy(false);
     if (error) { setReview(false); return setMsg(error.message); }
+    if (!data?.length) { setReview(false); return setMsg('No se guardó: no tienes permiso para esta operación.'); }
     onSaved();
   }
 
@@ -279,17 +312,17 @@ function ScheduleForm({ companyId, scheds, depts, groups, emps, onClose, onSaved
   const targets = scope === 'departamento' ? depts : scope === 'grupo' ? groups : scope === 'empleado' ? emps.map(e => ({ id: e.id, name: e.full_name })) : [];
 
   return (
-    <Modal title="Cambiar calendario de pago" onClose={onClose}>
+    <Modal title={x ? 'Editar cambio programado' : 'Cambiar calendario de pago'} onClose={onClose}>
       {!review ? (
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={e => { e.preventDefault(); const v = validate(); if (v) setMsg(v); else { setMsg(null); setReview(true); } }}>
           <label className="text-xs">Aplica a
-            <select className={field} value={scope} onChange={e => { setScope(e.target.value as Scope); setTargetId(''); }}>
+            <select disabled={!!x} className={field} value={scope} onChange={e => { setScope(e.target.value as Scope); setTargetId(''); }}>
               <option value="empresa">Toda la empresa</option><option value="departamento">Un departamento</option>
               <option value="grupo">Un grupo</option><option value="empleado">Un empleado</option>
             </select></label>
           {scope !== 'empresa' ? (
             <label className="text-xs">¿Cuál?
-              <select required className={field} value={targetId} onChange={e => setTargetId(e.target.value)}>
+              <select required disabled={!!x} className={field} value={targetId} onChange={e => setTargetId(e.target.value)}>
                 <option value="" disabled>Selecciona…</option>{targets.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
               </select></label>) : <div />}
           <label className="text-xs">Frecuencia
@@ -336,10 +369,10 @@ function ScheduleForm({ companyId, scheds, depts, groups, emps, onClose, onSaved
           </div>
           {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
           <div className="flex gap-2">
-            <button disabled={busy} className={btn} onClick={confirm}>Confirmar cambio</button>
+            <button disabled={busy} className={btn} onClick={confirm}>{x ? 'Guardar cambios' : 'Confirmar cambio'}</button>
             <button className="rounded-lg border px-4 py-2 text-sm" onClick={() => setReview(false)}>Volver</button>
           </div>
-          <p className="text-xs text-slate-500">Queda registrado quién lo hizo y cuándo. No se puede editar ni borrar después; para corregirlo se registra otro cambio.</p>
+          <p className="text-xs text-slate-500">Queda registrado quién lo hizo y cuándo. Mientras no empiece se puede editar o cancelar; una vez vigente solo se puede terminar.</p>
         </div>
       )}
     </Modal>

@@ -15,4 +15,5 @@ for f in supabase/migrations/*.sql; do echo "== $f"; $P -1 -f "$f"; done
 # Registro de los dos usuarios después de las migraciones (el trigger crea su app_users)
 $P -c "insert into auth.users(email) values ('aldost228@gmail.com'),('carlosrdz23579@gmail.com')"
 for f in supabase/seed/seed_inicial.sql supabase/seed/seed_calendarios.sql supabase/seed/seed_inicial.sql; do $P -f "$f" >/dev/null; done
+$P -1 -f supabase/migrations/0007_editar_cancelar_calendarios.sql && echo "== 0007 repetible"
 $P -f supabase/tests/checks.sql
