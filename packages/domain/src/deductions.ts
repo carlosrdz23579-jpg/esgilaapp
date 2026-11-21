@@ -20,3 +20,8 @@ export function deductionsForPeriod(list: readonly Deduction[], p: Period): Dedu
 }
 
 export const totalDeductions = (list: readonly Deduction[]): Cents => list.reduce((n, d) => n + d.amountCents, 0n);
+
+// Los ingresos extra (bonos, premios) tienen la misma forma y reglas de vigencia que los descuentos.
+export type ExtraEarning = Deduction;
+export const extrasForPeriod = deductionsForPeriod;
+export const totalExtras = totalDeductions;

@@ -190,3 +190,25 @@ begin
   reset role;
   raise notice 'OK: descuentos (capturar, autorizar por otra persona, cancelar, no editar)';
 end $$;
+
+-- 0011: ingresos extra (mismo control que descuentos)
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        emp uuid := (select id from public.employees where full_name = 'Coach 1');
+        x uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.extra_earnings (company_id, employee_id, label, amount_cents, kind, start_date, reason)
+    values (car, emp, 'Bono competencia', 50000, 'unico', current_date, '1er lugar estatal') returning id into x;
+  ok := false; begin update public.extra_earnings set status = 'autorizado' where id = x; exception when others then ok := true; end;
+  if not ok then raise exception 'el capturista autorizó su propio ingreso extra'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  update public.extra_earnings set status = 'autorizado' where id = x;
+  reset role;
+  raise notice 'OK: ingresos extra';
+end $$;

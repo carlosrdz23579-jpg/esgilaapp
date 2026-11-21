@@ -200,7 +200,10 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
         </form>
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
-        {emp && can('payroll') && <DeductionsPanel emp={emp} />}
+        {emp && can('payroll') && <AdjustmentsPanel emp={emp} table="extra_earnings" title="Ingresos extra" newLabel="+ Nuevo ingreso extra"
+          placeholder="Ej. Bono por competencia" help="Bonos, premios o pagos adicionales, para cualquier tipo de sueldo (incluido el fijo). Solo se pagan los autorizados; quien lo captura no puede autorizarlo (salvo el director)." />}
+        {emp && can('payroll') && <AdjustmentsPanel emp={emp} table="deductions" title="Descuentos" newLabel="+ Nuevo descuento"
+          placeholder="Ej. Uniforme" help="Solo se aplican los autorizados. Quien captura un descuento no puede autorizarlo (salvo el director). No incluye préstamos ni la rebaja por retardo." />}
       </div>
     </div>
   );
@@ -348,25 +351,26 @@ interface DRow { id: string; label: string; amount_cents: number; kind: 'unico' 
 const DBADGE: Record<DStatus, string> = { pendiente: 'bg-amber-100 text-amber-700', autorizado: 'bg-green-100 text-green-700',
   rechazado: 'bg-slate-200 text-slate-600', cancelado: 'bg-slate-200 text-slate-600' };
 
-/** Descuentos: se capturan pendientes y otra persona con permiso de autorizar los aprueba (el director puede ambos). */
-function DeductionsPanel({ emp }: { emp: Emp }) {
+/** Descuentos o ingresos extra: se capturan pendientes y otra persona con permiso de autorizar los aprueba (el director puede ambos). */
+function AdjustmentsPanel({ emp, table, title, newLabel, placeholder, help }:
+  { emp: Emp; table: 'deductions' | 'extra_earnings'; title: string; newLabel: string; placeholder: string; help: string }) {
   const { can, user } = useAuth();
   const [rows, setRows] = useState<DRow[]>([]);
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ label: '', amount: '', kind: 'unico' as 'unico' | 'recurrente', start: new Date().toLocaleDateString('en-CA'), end: '', reason: '' });
   const [msg, setMsg] = useState<string | null>(null);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('deductions').select('id,label,amount_cents,kind,start_date,end_date,reason,status,created_by,created_at,decision_note')
+    const { data, error } = await supabase.from(table).select('id,label,amount_cents,kind,start_date,end_date,reason,status,created_by,created_at,decision_note')
       .eq('employee_id', emp.id).order('created_at', { ascending: false });
     if (error) setMsg(error.message); else setRows((data as DRow[]) ?? []);
-  }, [emp.id]);
+  }, [emp.id, table]);
   useEffect(() => { load(); }, [load]);
 
   async function add(e: React.FormEvent) {
     e.preventDefault(); setMsg(null);
     const cents = pesosToCents(f.amount);
     if (cents === null || cents === 0) return setMsg('Importe inválido.');
-    const { error } = await supabase.from('deductions').insert({ company_id: emp.company_id, employee_id: emp.id, label: f.label.trim(),
+    const { error } = await supabase.from(table).insert({ company_id: emp.company_id, employee_id: emp.id, label: f.label.trim(),
       amount_cents: cents, kind: f.kind, start_date: f.start, end_date: f.kind === 'recurrente' && f.end ? f.end : null, reason: f.reason.trim() });
     if (error) return setMsg(error.message);
     setOpen(false); setF({ ...f, label: '', amount: '', reason: '' }); load();
@@ -375,7 +379,7 @@ function DeductionsPanel({ emp }: { emp: Emp }) {
     const verb = { autorizado: 'autorizar', rechazado: 'rechazar', cancelado: 'cancelar', pendiente: '' }[status];
     const note = window.prompt(`¿${verb[0].toUpperCase() + verb.slice(1)} "${r.label}" de ${formatMXN(r.amount_cents)}? Nota (opcional):`);
     if (note === null) return;
-    const { data, error } = await supabase.from('deductions').update({ status, decision_note: note.trim() || null }).eq('id', r.id).select('id');
+    const { data, error } = await supabase.from(table).update({ status, decision_note: note.trim() || null }).eq('id', r.id).select('id');
     if (error) return setMsg(error.message);
     if (!data?.length) return setMsg('No se aplicó: no tienes permiso para esta operación.');
     load();
@@ -384,12 +388,12 @@ function DeductionsPanel({ emp }: { emp: Emp }) {
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <div className="flex items-center"><h4 className="text-sm font-semibold">Descuentos</h4>
-        {can('payroll', 'edit') && <button className="ml-auto text-sm text-brand" onClick={() => setOpen(!open)}>+ Nuevo descuento</button>}</div>
-      <p className="text-xs text-slate-500">Solo se aplican los autorizados. Quien captura un descuento no puede autorizarlo (salvo el director). No incluye préstamos ni la rebaja por retardo.</p>
+      <div className="flex items-center"><h4 className="text-sm font-semibold">{title}</h4>
+        {can('payroll', 'edit') && <button className="ml-auto text-sm text-brand" onClick={() => setOpen(!open)}>{newLabel}</button>}</div>
+      <p className="text-xs text-slate-500">{help}</p>
       {open && (
         <form onSubmit={add} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
-          <label className="text-xs">Concepto<input required className={field} placeholder="Ej. Uniforme" value={f.label} onChange={e => setF({ ...f, label: e.target.value })} /></label>
+          <label className="text-xs">Concepto<input required className={field} placeholder={placeholder} value={f.label} onChange={e => setF({ ...f, label: e.target.value })} /></label>
           <label className="text-xs">Importe ($)<input required inputMode="decimal" className={field} value={f.amount} onChange={e => setF({ ...f, amount: e.target.value })} /></label>
           <label className="text-xs">Tipo<select className={field} value={f.kind} onChange={e => setF({ ...f, kind: e.target.value as 'unico' | 'recurrente' })}>
             <option value="unico">Una sola vez</option><option value="recurrente">Cada periodo de pago</option></select></label>
