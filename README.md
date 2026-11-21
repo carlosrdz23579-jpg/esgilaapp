@@ -9,7 +9,7 @@ Stack: React + TypeScript + Tailwind (Vite) y Supabase. Decisiones fijas en `doc
 | `docs/ARQUITECTURA.md` | Decisiones técnicas y mapa de módulos |
 | `supabase/migrations/0001…0007` | Esquema, permisos, RLS, Head Coach, calendarios de pago, corte, días laborables, editar/cancelar/terminar calendarios |
 | `supabase/seed/` | Carga inicial (ESGILA CAR y Viñedos) y calendario quincenal; se pueden repetir sin duplicar |
-| `packages/domain/src` | Cálculo puro: nómina, efectivo y calendario de pagos (centavos/minutos enteros) |
+| `packages/domain/src` | Cálculo puro: nómina, efectivo, calendario de pagos e importador del reloj checador (centavos/minutos enteros) |
 | `apps/web` | Aplicación React (inicio de sesión, menú por permisos, Empleados, Empresas y calendarios) |
 
 ## Reglas de pago de ESGILA (en `pay-calendar.ts` y migración 0006)
@@ -23,7 +23,7 @@ Stack: React + TypeScript + Tailwind (Vite) y Supabase. Decisiones fijas en `doc
 ```
 # Lógica (Node 22+)
 cd packages/domain/src
-node --experimental-strip-types --test domain.test.ts pay-calendar.test.ts
+node --experimental-strip-types --test *.test.ts
 
 # Base de datos: todas las migraciones + seeds + verificaciones en un Postgres 16 desechable
 scripts/test-db.sh

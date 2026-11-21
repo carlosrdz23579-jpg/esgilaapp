@@ -6,3 +6,7 @@ dist/
 *.log
 .DS_Store
 *.tsbuildinfo
+
+# Reportes reales del checador: traen datos de empleados, nunca se suben
+*.xls
+*.xlsx
