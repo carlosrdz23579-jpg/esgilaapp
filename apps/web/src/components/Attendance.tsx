@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
-import { parseCheckerSheet, RAW_SHEET_NAMES, type CheckerReport } from '@domain/checador';
+import { parseCheckerSheet, mergeReports, RAW_SHEET_NAMES, type CheckerReport } from '@domain/checador';
 import { blocksForDate, reviewDay, ISSUE_LABEL, type WeeklyBlock, type DayException, type Review, type ReviewKind, type ReviewedDay } from '@domain/attendance';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
@@ -36,22 +36,27 @@ export default function Attendance() {
 // ---------------------------------------------------------------------------
 function Upload({ companies, defaultCompany, onDone }: { companies: { id: string; trade_name: string }[]; defaultCompany: string; onDone: () => void }) {
   const [company, setCompany] = useState(defaultCompany);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [report, setReport] = useState<CheckerReport | null>(null);
   const [emps, setEmps] = useState<EmpLite[]>([]);
   const [map, setMap] = useState<Record<string, Mapping>>({});
   const [showAll, setShowAll] = useState(false);
   const [msg, setMsg] = useState<string | null>(null); const [ok, setOk] = useState<string | null>(null); const [busy, setBusy] = useState(false);
 
-  async function read(f: File) {
-    setMsg(null); setOk(null); setReport(null); setFile(f);
+  /** Uno o varios archivos del MISMO checador (Viñedos manda dos cuando el periodo cruza de mes). */
+  async function read(list: File[]) {
+    setMsg(null); setOk(null); setReport(null); setFiles(list);
     try {
       const XLSX = await import('xlsx');
-      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
-      const name = RAW_SHEET_NAMES.find(n => wb.SheetNames.includes(n));
-      if (!name) throw new Error(`El archivo no tiene una hoja de checadas (${RAW_SHEET_NAMES.join(' o ')}). Hojas: ${wb.SheetNames.join(', ')}`);
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: false, defval: '' });
-      setReport(parseCheckerSheet(rows));
+      const reports: CheckerReport[] = [];
+      for (const f of list) {
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+        const name = RAW_SHEET_NAMES.find(n => wb.SheetNames.includes(n));
+        if (!name) throw new Error(`"${f.name}" no tiene una hoja de checadas (${RAW_SHEET_NAMES.join(' o ')}). Hojas: ${wb.SheetNames.join(', ')}`);
+        const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+        try { reports.push(parseCheckerSheet(rows)); } catch (e) { throw new Error(`"${f.name}": ${(e as Error).message}`); }
+      }
+      setReport(mergeReports(reports));
     } catch (e) { setMsg((e as Error).message); }
   }
 
@@ -77,7 +82,7 @@ function Upload({ companies, defaultCompany, onDone }: { companies: { id: string
   }
 
   async function save() {
-    if (!report || !company || !file) return;
+    if (!report || !company || files.length === 0) return;
     if (pending.length && !window.confirm(`${pending.length} número(s) con checadas no están ligados ni ignorados; sus horas no se contarán hasta ligarlos. ¿Guardar así?`)) return;
     setBusy(true); setMsg(null); setOk(null);
     try {
@@ -86,7 +91,7 @@ function Upload({ companies, defaultCompany, onDone }: { companies: { id: string
       if (links.length) { const r = await supabase.from('checker_ids').upsert(links, { onConflict: 'company_id,device_id' }); if (r.error) throw r.error; }
       const withPunches = report.people.filter(p => Object.keys(p.punches).length && !map[p.deviceId]?.ignored);
       const imp = await supabase.from('checker_imports').insert({ company_id: company, from_date: report.from, to_date: report.to,
-        file_name: file.name, people: withPunches.length }).select('id').single();
+        file_name: files.map(f => f.name).join(' + '), people: withPunches.length }).select('id').single();
       if (imp.error) throw imp.error;
       const rows = withPunches.flatMap(p => Object.entries(p.punches).map(([date, times]) =>
         ({ import_id: imp.data.id, company_id: company, device_id: p.deviceId, date, times })));
@@ -102,9 +107,10 @@ function Upload({ companies, defaultCompany, onDone }: { companies: { id: string
       <div className="flex flex-wrap items-end gap-3 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Checador de<select className={`${field} block`} value={company} onChange={e => { setCompany(e.target.value); setReport(null); }}>
           <option value="" disabled>Elige sucursal…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select></label>
-        <label className="text-xs">Reporte (.xls)<input type="file" accept=".xls,.xlsx" disabled={!company} className="block text-sm"
-          onChange={e => e.target.files?.[0] && read(e.target.files[0])} /></label>
-        {report && <p className="text-sm">Del <b>{report.from}</b> al <b>{report.to}</b> · {report.people.length} personas en el checador</p>}
+        <label className="text-xs">Reporte(s) .xls — puedes elegir varios del mismo checador
+          <input type="file" accept=".xls,.xlsx" multiple disabled={!company} className="block text-sm"
+            onChange={e => e.target.files?.length && read([...e.target.files])} /></label>
+        {report && <p className="text-sm">{files.length > 1 ? `${files.length} archivos juntos · ` : ''}Del <b>{report.from}</b> al <b>{report.to}</b> · {report.people.length} personas en el checador</p>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       {ok && <p className="rounded bg-green-50 p-2 text-sm text-green-800">{ok} <button className="ml-2 underline" onClick={onDone}>Ir a revisar →</button></p>}

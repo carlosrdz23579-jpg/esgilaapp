@@ -165,3 +165,25 @@ export function evaluateDay(date: string, punches: string[], schedule: Block[], 
   ev.issues = [...new Set(ev.issues)];
   return ev;
 }
+
+/**
+ * Junta varios reportes del MISMO checador (p. ej. Viñedos manda uno por mes cuando el periodo
+ * cruza de mes). Rango = del inicio más temprano al fin más tardío; si un día viene en ambos,
+ * se juntan sus checadas sin repetir. El nombre/departamento se toma del primero que lo traiga.
+ */
+export function mergeReports(reports: readonly CheckerReport[]): CheckerReport {
+  if (reports.length === 0) throw new Error('No hay reportes para juntar');
+  const people = new Map<string, CheckerPerson>();
+  for (const r of reports) for (const p of r.people) {
+    const cur = people.get(p.deviceId) ?? { deviceId: p.deviceId, name: '', dept: '', punches: {} };
+    if (!cur.name) cur.name = p.name;
+    if (!cur.dept) cur.dept = p.dept;
+    for (const [d, times] of Object.entries(p.punches)) cur.punches[d] = [...new Set([...(cur.punches[d] ?? []), ...times])].sort();
+    people.set(p.deviceId, cur);
+  }
+  return {
+    from: reports.map(r => r.from).sort()[0],
+    to: reports.map(r => r.to).sort().at(-1)!,
+    people: [...people.values()].sort((a, b) => (+a.deviceId || 0) - (+b.deviceId || 0) || a.deviceId.localeCompare(b.deviceId)),
+  };
+}

@@ -77,3 +77,17 @@ test('horario partido (mañana y tarde)', () => {
   const e = evaluateDay('d', ['06:00', '08:00', '16:00', '20:00'], [{ start: '06:00', end: '08:00' }, ...H]);
   assert.equal(e.paidMinutes, 360); assert.deepEqual(e.issues, []);
 });
+
+import { mergeReports } from './checador.ts';
+test('dos reportes del mismo checador al cambiar de mes se juntan', () => {
+  const oct = { from: '2026-10-15', to: '2026-10-31', people: [
+    { deviceId: '3', name: 'Maria Jose', dept: 'ADMIN', punches: { '2026-10-31': ['09:00', '13:00'] } },
+    { deviceId: '7', name: 'Kamila', dept: 'COACH', punches: {} }] };
+  const nov = { from: '2026-11-01', to: '2026-11-14', people: [
+    { deviceId: '3', name: 'Maria Jose', dept: 'ADMIN', punches: { '2026-11-02': ['15:55', '18:59'], '2026-10-31': ['13:00', '17:00'] } },
+    { deviceId: '10', name: 'sergioi', dept: 'ADMIN', punches: { '2026-11-03': ['16:00', '20:00'] } }] };
+  const m = mergeReports([nov, oct]);
+  assert.deepEqual([m.from, m.to], ['2026-10-15', '2026-11-14']);
+  assert.deepEqual(m.people.map(p => p.deviceId), ['3', '7', '10']);
+  assert.deepEqual(m.people[0].punches, { '2026-10-31': ['09:00', '13:00', '17:00'], '2026-11-02': ['15:55', '18:59'] });
+});
