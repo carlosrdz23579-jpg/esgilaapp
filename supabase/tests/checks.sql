@@ -376,3 +376,22 @@ begin
   reset role;
   raise notice 'OK: préstamos (sin interés de empresa, autorizar, saltar por director, abono al autorizar, reversa, liquidar)';
 end $$;
+
+-- 0016: efectivo
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        run uuid := (select id from public.payroll_runs where status = 'autorizada' limit 1);
+        ok boolean;
+begin
+  if (select pay_method from public.employees where full_name = 'Coach 1') <> 'efectivo' then raise exception 'pay_method por defecto'; end if;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin insert into public.cash_reconciliations (run_id, company_id, planned_cents, withdrawn_cents, delivered_cents)
+    values (run, car, 140000, 150000, 140000); exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó diferencia sin nota'; end if;
+  insert into public.cash_reconciliations (run_id, company_id, planned_cents, withdrawn_cents, delivered_cents, note)
+    values (run, car, 140000, 150000, 140000, 'sobraron $100, regresan a caja');
+  reset role;
+  raise notice 'OK: efectivo (forma de pago, conciliación con nota obligatoria si hay diferencia)';
+end $$;

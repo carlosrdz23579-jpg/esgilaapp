@@ -11,12 +11,12 @@ interface Emp {
   id: string; company_id: string; full_name: string; department_id: string; group_id: string | null;
   job_title: string | null; state: EState; hire_date: string | null; phone: string | null; email: string | null;
   curp: string | null; rfc: string | null; birth_date: string | null; address: string | null; contract_type: string | null;
-  is_head_coach: boolean; work_days: number[];
+  is_head_coach: boolean; work_days: number[]; pay_method: string;
 }
 
-const COLS = 'id,company_id,full_name,department_id,group_id,job_title,state,hire_date,phone,email,curp,rfc,birth_date,address,contract_type,is_head_coach,work_days';
+const COLS = 'id,company_id,full_name,department_id,group_id,job_title,state,hire_date,phone,email,curp,rfc,birth_date,address,contract_type,is_head_coach,work_days,pay_method';
 const EMPTY = { full_name: '', company_id: '', department_id: '', group_id: '', job_title: '', hire_date: '', phone: '', email: '',
-  curp: '', rfc: '', birth_date: '', address: '', contract_type: '' };
+  curp: '', rfc: '', birth_date: '', address: '', contract_type: '', pay_method: 'efectivo' };
 const field = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const badge: Record<EState, string> = { activo: 'bg-green-100 text-green-700', suspendido: 'bg-amber-100 text-amber-700', baja: 'bg-slate-200 text-slate-600' };
 
@@ -128,7 +128,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
     const nz = (s: string) => (s.trim() === '' ? null : s.trim());
     const payload = { full_name: f.full_name.trim(), department_id: f.department_id, group_id: nz(f.group_id), job_title: nz(f.job_title),
       hire_date: nz(f.hire_date), phone: nz(f.phone), email: nz(f.email), curp: nz(f.curp?.toUpperCase?.() ?? ''), rfc: nz(f.rfc?.toUpperCase?.() ?? ''),
-      birth_date: nz(f.birth_date), address: nz(f.address), contract_type: nz(f.contract_type), is_head_coach: isCoachDept ? head : false, work_days: [...workDays].sort((a, b) => a - b) };
+      birth_date: nz(f.birth_date), address: nz(f.address), contract_type: nz(f.contract_type), pay_method: f.pay_method || 'efectivo', is_head_coach: isCoachDept ? head : false, work_days: [...workDays].sort((a, b) => a - b) };
     const limited = { group_id: payload.group_id, job_title: payload.job_title, phone: payload.phone, email: payload.email,
       address: payload.address, work_days: payload.work_days };
     const res = emp
@@ -184,6 +184,8 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
           <label className="text-xs">Puesto<input className={field} value={f.job_title} onChange={e => set('job_title', e.target.value)} /></label>
           <label className="text-xs">Fecha de ingreso<input type="date" disabled={lock} className={field} value={f.hire_date} onChange={e => set('hire_date', e.target.value)} /></label>
           <label className="text-xs">Tipo de contratación<input disabled={lock} className={field} value={f.contract_type} onChange={e => set('contract_type', e.target.value)} /></label>
+          <label className="text-xs">Forma de pago<select disabled={lock} className={field} value={f.pay_method} onChange={e => set('pay_method', e.target.value)}>
+            <option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option></select></label>
           <label className="text-xs">Teléfono<input className={field} value={f.phone} onChange={e => set('phone', e.target.value)} /></label>
           <label className="text-xs">Correo<input type="email" className={field} value={f.email} onChange={e => set('email', e.target.value)} /></label>
           <label className="text-xs">CURP<input maxLength={18} disabled={lock} className={field} value={f.curp} onChange={e => set('curp', e.target.value)} /></label>

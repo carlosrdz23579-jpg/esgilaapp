@@ -2,3 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 :root { --brand: 37 99 235; }
+
+/* Al imprimir (sobres de efectivo) solo sale el contenido */
+@media print {
+  aside, header, nav { display: none !important; }
+  main { padding: 0 !important; }
+}
