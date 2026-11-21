@@ -318,3 +318,61 @@ begin
     values (car, c1, 'base_retardo', 'Base para retardo', 'tarifa_retardo', 6500, current_date, 'prueba');
   raise notice 'OK: tarifa_retardo';
 end $$;
+
+-- 0015: préstamos
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        hc uuid := (select id from public.employees where full_name = 'HC');
+        loan uuid; ploan uuid; sk uuid; run uuid; v int; ok boolean; hoy date := app.today_mx();
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin insert into public.loans (company_id, employee_id, lender, principal_cents, interest_cents, installment_cents, start_date, reason)
+    values (car, c1, 'empresa', 300000, 10000, 50000, hoy, 'x'); exception when check_violation then ok := true; end;
+  if not ok then raise exception 'préstamo de empresa con interés'; end if;
+  insert into public.loans (company_id, employee_id, lender, principal_cents, installment_cents, start_date, reason)
+    values (car, c1, 'empresa', 100000, 60000, hoy - 20, 'emergencia') returning id into loan;
+  insert into public.loans (company_id, employee_id, lender, principal_cents, interest_cents, installment_cents, start_date, reason)
+    values (car, c1, 'director', 200000, 20000, 50000, hoy - 20, 'personal') returning id into ploan;
+  ok := false; begin update public.loans set status = 'activo' where id = loan; exception when others then ok := true; end;
+  if not ok then raise exception 'el capturista autorizó su préstamo'; end if;
+  insert into public.loan_skips (loan_id, skip_date, reason) values (loan, hoy, 'lo pidió el empleado') returning id into sk;
+  reset role;
+
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  update public.loans set status = 'activo' where id in (loan, ploan);
+  update public.loan_skips set status = 'autorizado' where id = sk;
+  reset role;
+
+  -- Nómina autorizada con descuento de préstamo registra el abono; reabrir lo revierte.
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin insert into public.loan_payments (loan_id, amount_cents, source) values (loan, 60000, 'nomina'); exception when others then ok := true; end;
+  if not ok then raise exception 'abono de nómina a mano'; end if;
+  insert into public.payroll_runs (company_id, period_start, period_end, nominal_pay_date) values (car, hoy - 40, hoy - 26, hoy - 25) returning id into run;
+  v := public.save_payroll_version(run, 'con préstamo', jsonb_build_array(jsonb_build_object('employee_id', c1, 'pay_date', hoy - 25,
+        'gross_cents', 200000, 'deduction_cents', 60000, 'net_cents', 140000,
+        'detail', jsonb_build_object('loanLines', jsonb_build_array(jsonb_build_object('loan_id', loan, 'amount', '60000')))),
+        jsonb_build_object('employee_id', hc, 'pay_date', hoy - 25, 'gross_cents', 1, 'deduction_cents', 0, 'net_cents', 1, 'detail', '{}'::jsonb)), '{}');
+  reset role;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  perform public.set_payroll_status(run, 'autorizar');
+  if app.loan_paid(loan) <> 60000 then raise exception 'no registró el abono: %', app.loan_paid(loan); end if;
+  perform public.set_payroll_status(run, 'reabrir');
+  if app.loan_paid(loan) <> 0 then raise exception 'no revirtió el abono'; end if;
+  perform public.set_payroll_status(run, 'autorizar');
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.loan_payments (loan_id, amount_cents, source, note) values (loan, 40000, 'manual', 'pagó en efectivo');
+  if (select status from public.loans where id = loan) <> 'liquidado' then raise exception 'no se liquidó'; end if;
+  ok := false; begin insert into public.loan_payments (loan_id, amount_cents, source, note) values (ploan, 999999, 'manual', 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'abono mayor al saldo'; end if;
+  reset role;
+  raise notice 'OK: préstamos (sin interés de empresa, autorizar, saltar por director, abono al autorizar, reversa, liquidar)';
+end $$;

@@ -202,6 +202,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
         {emp && can('payroll_hours') && <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
+        {emp && can('payroll') && <LoansPanel emp={emp} />}
         {emp && can('payroll') && <AdjustmentsPanel emp={emp} table="extra_earnings" title="Ingresos extra" newLabel="+ Nuevo ingreso extra"
           placeholder="Ej. Bono por competencia" help="Bonos, premios o pagos adicionales, para cualquier tipo de sueldo (incluido el fijo). Solo se pagan los autorizados; quien lo captura no puede autorizarlo (salvo el director)." />}
         {emp && can('payroll') && <AdjustmentsPanel emp={emp} table="deductions" title="Descuentos" newLabel="+ Nuevo descuento"
@@ -418,6 +419,119 @@ function AdjustmentsPanel({ emp, table, title, newLabel, placeholder, help }:
             {r.status === 'autorizado' && (can('payroll', 'edit') || canAuth) && <button className="text-red-700" onClick={() => decide(r, 'cancelado')}>Cancelar</button>}
           </span>
         </div>))}
+    </div>
+  );
+}
+
+interface LoanRow { id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string;
+  reason: string; status: 'pendiente' | 'activo' | 'rechazado' | 'liquidado' | 'cancelado'; created_by: string; decision_note: string | null; created_at: string }
+interface SkipRow { id: string; loan_id: string; skip_date: string; reason: string; status: 'pendiente' | 'autorizado' | 'rechazado' }
+const LSTAT: Record<LoanRow['status'], string> = { pendiente: 'bg-amber-100 text-amber-700', activo: 'bg-blue-100 text-blue-700',
+  liquidado: 'bg-green-100 text-green-700', rechazado: 'bg-slate-200 text-slate-600', cancelado: 'bg-slate-200 text-slate-600' };
+
+/** Préstamos: de la empresa (sin interés) o personales del director (con interés). Saldo automático con cada nómina autorizada. */
+function LoansPanel({ emp }: { emp: Emp }) {
+  const { can, user } = useAuth();
+  const [rows, setRows] = useState<LoanRow[]>([]); const [paid, setPaid] = useState<Record<string, number>>({}); const [skips, setSkips] = useState<SkipRow[]>([]);
+  const [open, setOpen] = useState(false); const [msg, setMsg] = useState<string | null>(null);
+  const [f, setF] = useState({ lender: 'empresa' as 'empresa' | 'director', principal: '', interest: '', installment: '', start: new Date().toLocaleDateString('en-CA'), reason: '' });
+  const isDirector = user?.role === 'director';
+
+  const load = useCallback(async () => {
+    const l = await supabase.from('loans').select('id,lender,principal_cents,interest_cents,installment_cents,start_date,reason,status,created_by,decision_note,created_at')
+      .eq('employee_id', emp.id).order('created_at', { ascending: false });
+    if (l.error) return setMsg(l.error.message);
+    const list = (l.data as LoanRow[]) ?? []; setRows(list);
+    if (!list.length) { setPaid({}); setSkips([]); return; }
+    const ids = list.map(x => x.id);
+    const [p, s] = await Promise.all([supabase.from('loan_payments').select('loan_id,amount_cents').in('loan_id', ids),
+      supabase.from('loan_skips').select('id,loan_id,skip_date,reason,status').in('loan_id', ids).order('skip_date', { ascending: false })]);
+    const m: Record<string, number> = {}; for (const x of (p.data as { loan_id: string; amount_cents: number }[]) ?? []) m[x.loan_id] = (m[x.loan_id] ?? 0) + x.amount_cents;
+    setPaid(m); setSkips((s.data as SkipRow[]) ?? []);
+  }, [emp.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault(); setMsg(null);
+    const p = pesosToCents(f.principal), inst = pesosToCents(f.installment), int = f.lender === 'director' ? pesosToCents(f.interest || '0') : 0;
+    if (!p || !inst || int === null) return setMsg('Revisa los importes.');
+    const total = p + int;
+    if (!window.confirm(`${f.lender === 'director' ? 'Préstamo PERSONAL DEL DIRECTOR' : 'Préstamo de la empresa'}: ${formatMXN(p)}${int ? ` + ${formatMXN(int)} de interés` : ''} = ${formatMXN(total)}, pagando ${formatMXN(inst)} por periodo (unos ${Math.ceil(total / inst)} pagos). Queda pendiente de autorizar. ¿Registrar?`)) return;
+    const { error } = await supabase.from('loans').insert({ company_id: emp.company_id, employee_id: emp.id, lender: f.lender, principal_cents: p,
+      interest_cents: int, installment_cents: inst, start_date: f.start, reason: f.reason.trim() });
+    if (error) return setMsg(error.message);
+    setOpen(false); load();
+  }
+  async function setStatus(l: LoanRow, status: 'activo' | 'rechazado' | 'cancelado') {
+    const note = window.prompt(`¿${{ activo: 'Autorizar', rechazado: 'Rechazar', cancelado: 'Cancelar' }[status]} este préstamo? Nota (opcional):`);
+    if (note === null) return;
+    const { data, error } = await supabase.from('loans').update({ status, decision_note: note.trim() || null }).eq('id', l.id).select('id');
+    if (error) return setMsg(error.message); if (!data?.length) return setMsg('No se aplicó: sin permiso.'); load();
+  }
+  async function abono(l: LoanRow) {
+    const v = window.prompt('Abono fuera de nómina (p. ej. pagó en efectivo). Importe $:'); if (!v) return;
+    const c = pesosToCents(v); if (!c) return setMsg('Importe inválido.');
+    const note = window.prompt('Motivo / referencia:'); if (!note?.trim()) return;
+    const { error } = await supabase.from('loan_payments').insert({ loan_id: l.id, amount_cents: c, source: 'manual', note: note.trim() });
+    if (error) setMsg(error.message); else load();
+  }
+  async function skip(l: LoanRow) {
+    const d = window.prompt('¿Qué periodo se salta? Escribe una fecha dentro de ese periodo (AAAA-MM-DD):', new Date().toLocaleDateString('en-CA'));
+    if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    const reason = window.prompt('Motivo (lo pidió el empleado porque…):'); if (!reason?.trim()) return;
+    const { error } = await supabase.from('loan_skips').insert({ loan_id: l.id, skip_date: d, reason: reason.trim() });
+    if (error) setMsg(error.message); else load();
+  }
+  async function decideSkip(s: SkipRow, status: 'autorizado' | 'rechazado') {
+    const { error } = await supabase.from('loan_skips').update({ status }).eq('id', s.id);
+    if (error) setMsg(error.message); else load();
+  }
+  const canEdit = can('payroll', 'edit'), canAuth = can('payroll', 'authorize');
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <div className="flex items-center"><h4 className="text-sm font-semibold">Préstamos</h4>
+        {canEdit && <button className="ml-auto text-sm text-brand" onClick={() => setOpen(!open)}>+ Nuevo préstamo</button>}</div>
+      {open && (
+        <form onSubmit={add} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
+          <label className="text-xs">Quién presta<select className={field} value={f.lender} onChange={e => setF({ ...f, lender: e.target.value as 'empresa' | 'director', interest: '' })}>
+            <option value="empresa">La empresa (sin interés)</option><option value="director">El director, de su dinero personal</option></select></label>
+          <label className="text-xs">Monto prestado ($)<input required inputMode="decimal" className={field} value={f.principal} onChange={e => setF({ ...f, principal: e.target.value })} /></label>
+          {f.lender === 'director'
+            ? <label className="text-xs">Interés total acordado ($)<input inputMode="decimal" className={field} value={f.interest} onChange={e => setF({ ...f, interest: e.target.value })} /></label>
+            : <p className="self-end text-xs text-slate-500">Los préstamos de la empresa no generan interés (art. 111 LFT).</p>}
+          <label className="text-xs">Pago por periodo ($)<input required inputMode="decimal" className={field} value={f.installment} onChange={e => setF({ ...f, installment: e.target.value })} /></label>
+          <label className="text-xs">Empieza a descontarse en el periodo que incluye<input type="date" required className={field} value={f.start} onChange={e => setF({ ...f, start: e.target.value })} /></label>
+          <label className="text-xs">Motivo<input required className={field} value={f.reason} onChange={e => setF({ ...f, reason: e.target.value })} /></label>
+          <div className="sm:col-span-2"><button className="rounded-lg border border-brand px-3 py-2 text-sm text-brand">Registrar (queda pendiente de autorizar)</button></div>
+        </form>)}
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+      {rows.map(l => {
+        const total = l.principal_cents + l.interest_cents; const balance = total - (paid[l.id] ?? 0);
+        const mine = skips.filter(s => s.loan_id === l.id);
+        return (
+          <div key={l.id} className="space-y-1 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <b>{l.lender === 'director' ? 'Préstamo personal del director' : 'Préstamo de la empresa'}</b>
+              <span>{formatMXN(l.principal_cents)}{l.interest_cents ? ` + ${formatMXN(l.interest_cents)} interés` : ''}</span>
+              <span className="text-xs text-slate-500">{formatMXN(l.installment_cents)} por periodo desde {l.start_date}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs ${LSTAT[l.status]}`}>{l.status}</span>
+              {(l.status === 'activo' || l.status === 'liquidado') && <span className="ml-auto font-semibold">Saldo {formatMXN(balance)}</span>}
+            </div>
+            <p className="text-xs text-slate-400">{l.reason}{l.decision_note ? ` · ${l.decision_note}` : ''}</p>
+            {mine.map(s => <p key={s.id} className="text-xs">Saltar periodo del {s.skip_date}: <b>{s.status}</b> <span className="text-slate-400">({s.reason})</span>
+              {s.status === 'pendiente' && isDirector && <> · <button className="text-green-700" onClick={() => decideSkip(s, 'autorizado')}>Autorizar</button> · <button className="text-red-700" onClick={() => decideSkip(s, 'rechazado')}>Rechazar</button></>}</p>)}
+            <div className="space-x-3 text-xs">
+              {l.status === 'pendiente' && canAuth && (l.created_by !== user?.id || isDirector) && (l.lender === 'empresa' || isDirector) && <>
+                <button className="text-green-700" onClick={() => setStatus(l, 'activo')}>Autorizar</button>
+                <button className="text-red-700" onClick={() => setStatus(l, 'rechazado')}>Rechazar</button></>}
+              {l.status === 'activo' && canEdit && <>
+                <button className="text-brand" onClick={() => skip(l)}>Solicitar saltar un periodo</button>
+                <button className="text-brand" onClick={() => abono(l)}>Registrar abono fuera de nómina</button></>}
+              {l.status === 'activo' && (canEdit || canAuth) && <button className="text-red-700" onClick={() => setStatus(l, 'cancelado')}>Cancelar</button>}
+            </div>
+          </div>);
+      })}
     </div>
   );
 }

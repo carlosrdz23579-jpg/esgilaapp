@@ -39,7 +39,8 @@ test('por día con tarifa de referencia para retardo (Madelin: $300/día, rebaja
     { date: '2026-11-18', paidMinutes: 0, attended: false, late: false, scheduled: true },
     { date: '2026-11-19', paidMinutes: 0, attended: false, late: false, scheduled: true, excused: true },
     { date: '2026-11-22', paidMinutes: 0, attended: false, late: false, scheduled: false }];
-  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d, concepts: c, lateDeductionBps: 2500, extras: [], deductions: [], loanCents: 50000n });
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d, concepts: c, lateDeductionBps: 2500, extras: [], deductions: [],
+    loanLines: [{ loanId: 'L', label: 'Préstamo', amountCents: 50000n, skipped: false, balanceAfterCents: 0n }] });
   assert.equal(l.grossCents, 60000n);                       // 2 días × $300 (la tarifa de referencia no se paga)
   assert.deepEqual(l.detail.lateDeduction, { count: 1, perLate: '1625', total: '1625' });   // 65 × 25 % = $16.25
   assert.equal(l.netCents, 60000n - 1625n - 50000n);

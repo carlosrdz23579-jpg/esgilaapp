@@ -8,6 +8,7 @@ import { periodsBetween } from '@domain/pay-calendar';
 import { computePeriodLine, type PeriodLine } from '@domain/period-payroll';
 import type { Concept } from '@domain/concepts';
 import type { Deduction } from '@domain/deductions';
+import { loanLinesForPeriod, type Loan, type LoanSkip } from '@domain/loans';
 
 const btn = 'rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60';
 const btn2 = 'rounded-lg border px-3 py-1.5 text-sm disabled:opacity-60';
@@ -120,14 +121,25 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
     setBusy(true); setMsg(null); setInfo(null);
     try {
       const ids = period.emps.map(x => x.emp.id);
-      const [att, cc, xe, dd] = await Promise.all([
+      const [att, cc, xe, dd, ln] = await Promise.all([
         loadAttendance(companyId, period.emps.map(x => x.emp), period.start, period.end),
         supabase.from('compensation_concepts').select('employee_id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,created_at')
           .in('employee_id', ids).lte('effective_from', period.end).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
         supabase.from('extra_earnings').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
         supabase.from('deductions').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
+        supabase.from('loans').select('id,employee_id,lender,principal_cents,interest_cents,installment_cents,start_date,status').in('employee_id', ids).eq('status', 'activo'),
       ]);
-      const err = cc.error ?? xe.error ?? dd.error; if (err) throw err;
+      const err = cc.error ?? xe.error ?? dd.error ?? ln.error; if (err) throw err;
+      type LoanRow = { id: string; employee_id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string; status: Loan['status'] };
+      const loanRows = (ln.data as LoanRow[]) ?? [];
+      const loanIds = loanRows.map(l => l.id);
+      const [lp, ls] = loanIds.length ? await Promise.all([
+        supabase.from('loan_payments').select('loan_id,amount_cents').in('loan_id', loanIds),
+        supabase.from('loan_skips').select('loan_id,skip_date,status').in('loan_id', loanIds),
+      ]) : [{ data: [], error: null }, { data: [], error: null }];
+      if (lp.error || ls.error) throw (lp.error ?? ls.error)!;
+      const paid = (id: string) => ((lp.data ?? []) as { loan_id: string; amount_cents: number }[]).filter(p => p.loan_id === id).reduce((n, p) => n + BigInt(p.amount_cents), 0n);
+      const skips: LoanSkip[] = ((ls.data ?? []) as { loan_id: string; skip_date: string; status: LoanSkip['status'] }[]).map(s => ({ loanId: s.loan_id, date: s.skip_date, status: s.status }));
       const pending = att.reduce((n, a) => n + (a.hasSchedule ? a.days.reduce((m, d) => m + d.pending.length, 0) : 0), 0);
       const noSched = att.filter(a => !a.hasSchedule).map(a => a.emp.full_name);
       if ((pending || noSched.length) && !window.confirm(`Antes de calcular:\n${pending ? `• ${pending} excepción(es) de asistencia sin revisar\n` : ''}${noSched.length ? `• Sin horario base: ${noSched.join(', ')}\n` : ''}\nLo pendiente se calcula como está (faltas sin justificar, extras sin pagar). ¿Calcular de todos modos?`)) { setBusy(false); return; }
@@ -148,6 +160,10 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
             late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0 })),
           extras: (xe.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           deductions: (dd.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
+          loanLines: loanLinesForPeriod(loanRows.filter(l => l.employee_id === emp.id).map(l => ({
+            id: l.id, label: l.lender === 'director' ? 'Préstamo personal del director' : 'Préstamo de la empresa', lender: l.lender,
+            totalCents: BigInt(l.principal_cents) + BigInt(l.interest_cents), paidCents: paid(l.id), installmentCents: BigInt(l.installment_cents),
+            startDate: l.start_date, status: l.status })), skips, { start: period.start, end: period.end }),
         });
         if (a.days.some(d => d.pending.length) || !a.hasSchedule) line.detail.warnings.push('Tenía asistencia sin revisar al calcular.');
         return { employee_id: emp.id, pay_date: line.payDate, gross_cents: line.grossCents.toString(), deduction_cents: line.deductionCents.toString(),
@@ -296,6 +312,7 @@ function LineDetail({ line }: { line: Line }) {
           {row('Rebajas por retardos', late ? `−${formatMXN(late)}` : formatMXN(0))}
           {other > 0n && d.deductions.map((x, i) => <tr key={'d' + i} className="border-t"><td className="py-1.5">− {x.label}</td><td className="py-1.5 text-right">−{formatMXN(x.amount)}</td></tr>)}
           {row('Préstamos', loans ? `−${formatMXN(loans)}` : formatMXN(0))}
+          {(d.loanLines ?? []).map(l => <tr key={l.loan_id}><td colSpan={2} className="pb-1 pl-3 text-xs text-slate-500">{l.label}: {l.skipped ? 'este periodo se salta (autorizado por el director)' : `−${formatMXN(l.amount)} · saldo después: ${formatMXN(l.balance_after)}`}</td></tr>)}
           {row('Nómina neta', formatMXN(line.net_cents), true)}
           {row('Nómina reportada', line.reported_cents == null ? '—' : formatMXN(line.reported_cents))}
           {d.excused > 0 && <tr><td colSpan={2} className="pt-1 text-xs text-slate-500">{d.excused} falta(s) justificada(s)</td></tr>}
