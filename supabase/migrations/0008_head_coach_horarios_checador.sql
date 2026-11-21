@@ -2,13 +2,8 @@
 -- 0008  Head Coach, personas en dos sucursales, revocar permisos, horarios y números de checador
 -- =====================================================================
 
--- ---------- 1) Una cuenta puede tener un expediente por empresa ----------
--- Cada sucursal paga lo que se trabajó en ella: quien trabaja en CAR y en Viñedos tiene dos
--- expedientes (uno por empresa) ligados a la misma cuenta.
-alter table public.employees drop constraint if exists employees_user_id_key;
-do $$ begin
-  alter table public.employees add constraint employees_user_company_key unique (user_id, company_id);
-exception when duplicate_object or duplicate_table then null; end $$;
+-- ---------- 1) Claves auxiliares ----------
+-- (Una versión anterior de este archivo permitía un expediente por empresa; se descartó: ver 0009.)
 do $$ begin
   alter table public.employees add constraint employees_id_company_key unique (id, company_id);   -- para FKs compuestas
 exception when duplicate_object or duplicate_table then null; end $$;

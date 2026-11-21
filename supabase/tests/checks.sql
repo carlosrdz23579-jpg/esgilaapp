@@ -86,8 +86,10 @@ begin
   insert into public.employees (company_id, full_name, department_id, is_head_coach, user_id) values (car, 'HC', coach_car, true, hc_user) returning id into hc;
   insert into public.employees (company_id, full_name, department_id, group_id) values (car, 'Coach 1', coach_car, g1) returning id into c1;
   insert into public.employees (company_id, full_name, department_id) values (car, 'Staff 1', staff_car) returning id into s1;
-  -- misma cuenta, segundo expediente en Viñedos
-  insert into public.employees (company_id, full_name, department_id, user_id) values (vin, 'HC en Viñedos', coach_vin, hc_user);
+  -- 0009: una cuenta = un expediente (no se duplica en Viñedos)
+  ok := false; begin insert into public.employees (company_id, full_name, department_id, user_id) values (vin, 'HC en Viñedos', coach_vin, hc_user);
+  exception when unique_violation then ok := true; end;
+  if not ok then raise exception 'se permitió un segundo expediente para la misma cuenta'; end if;
 
   -- ===== Como Head Coach =====
   perform set_config('request.jwt.claim.sub', hc_user::text, true);
@@ -127,6 +129,13 @@ begin
   if not ok then raise exception 'aceptó un bloque con fin antes del inicio'; end if;
   insert into public.checker_ids (company_id, device_id, employee_id, label) values (car, '17', c1, 'jrisy'), (car, '30', c1, 'jrisy');
   insert into public.checker_ids (company_id, device_id, ignored, label) values (car, '1', true, 'ya no está');
+  -- Checada en el aparato de Viñedos de una persona de CAR: se liga a su expediente de CAR.
+  insert into public.checker_ids (company_id, device_id, employee_id, label) values (vin, '28', c1, 'Itzel_Glz');
+  -- Conceptos: portero (por día) + limpieza (por día, lun-vie) en la misma persona.
+  insert into public.compensation_concepts (company_id, employee_id, concept_key, label, kind, amount_cents, weekdays, effective_from, reason)
+    values (car, c1, 'portero', 'Portero', 'por_dia', 25000, '{0,1,2,3,4,5,6}', current_date, 'alta'),
+           (car, c1, 'limpieza', 'Limpieza', 'por_dia', 15000, '{1,2,3,4,5}', current_date, 'alta');
+  if (select count(*) from app.concepts_at(c1, current_date)) <> 2 then raise exception 'conceptos vigentes'; end if;
   reset role;
 
   -- Head Coach ahora sí tiene horas; al quitarle la marca, las pierde.
@@ -150,5 +159,5 @@ begin
   perform public.set_head_coach_responsibility(hc, 'horas_ver', false);
   select count(*) into n from public.head_coach_responsibilities(hc) where active; if n <> 0 then raise exception 'no se revocó'; end if;
   reset role;
-  raise notice 'OK: Head Coach, dos sucursales, revocación, horarios y checador';
+  raise notice 'OK: Head Coach, un expediente por persona, checador entre sucursales, conceptos, revocación, horarios y checador';
 end $$;

@@ -126,13 +126,13 @@ const toHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 /**
  * Reglas (confirmadas con ESGILA):
  * - Las horas pagadas son las del horario: llegar antes o salir después no suma.
- * - Tolerancia (10 min por defecto): si entra dentro de ella no es retardo.
+ * - Tolerancia (15 min por defecto; configurable por empresa): si entra dentro de ella no es retardo.
  * - Retardo: se pagan TODAS las horas del horario; la sanción es aparte (25 % de una hora,
  *   en computePayroll). Los minutos tarde solo se informan.
  * - Un bloque de checadas que no toca el horario (p. ej. 06:00–08:00 con horario 16:00–20:00)
  *   no se paga solo: se marca "fuera_de_horario" para que el nominista lo apruebe como clase extra.
  */
-export function evaluateDay(date: string, punches: string[], schedule: Block[], toleranceMin = 10): DayEvaluation {
+export function evaluateDay(date: string, punches: string[], schedule: Block[], toleranceMin = 15): DayEvaluation {
   const blocks = schedule.map(b => ({ s: toMin(b.start), e: toMin(b.end) })).filter(b => b.e > b.s).sort((a, b) => a.s - b.s);
   const scheduled = blocks.reduce((n, b) => n + (b.e - b.s), 0);
   const ev: DayEvaluation = { date, scheduledMinutes: scheduled, paidMinutes: 0, lateMinutes: 0, earlyLeaveMinutes: 0, outsideBlocks: [], issues: [] };

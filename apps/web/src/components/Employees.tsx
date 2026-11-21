@@ -12,7 +12,6 @@ interface Emp {
   curp: string | null; rfc: string | null; birth_date: string | null; address: string | null; contract_type: string | null;
   is_head_coach: boolean; work_days: number[];
 }
-interface Rate { id: number; hourly_rate_cents: number; previous_rate_cents: number | null; effective_from: string; created_at: string }
 
 const COLS = 'id,company_id,full_name,department_id,group_id,job_title,state,hire_date,phone,email,curp,rfc,birth_date,address,contract_type,is_head_coach,work_days';
 const EMPTY = { full_name: '', company_id: '', department_id: '', group_id: '', job_title: '', hire_date: '', phone: '', email: '',
@@ -206,48 +205,101 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   );
 }
 
+type Kind = 'por_hora' | 'por_dia' | 'fijo';
+interface ConceptRow { id: string; concept_key: string; label: string; kind: Kind; amount_cents: number; weekdays: number[];
+  active: boolean; effective_from: string; reason: string; created_at: string }
+const KIND_LABEL: Record<Kind, string> = { por_hora: 'por hora', por_dia: 'por día', fijo: 'fijo por periodo' };
+const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'concepto';
+
+/** Conceptos de pago: por hora, por día y/o fijo; varios a la vez. Solo-agregar: cada cambio es una fila nueva. */
 function SalaryPanel({ emp }: { emp: Emp }) {
   const { can } = useAuth();
-  const [rates, setRates] = useState<Rate[]>([]);
-  const [amount, setAmount] = useState(''); const [from, setFrom] = useState(new Date().toISOString().slice(0, 10));
+  const [rows, setRows] = useState<ConceptRow[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
+  const [edit, setEdit] = useState<ConceptRow | 'new' | null>(null);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('employee_compensation_history')
-      .select('id,hourly_rate_cents,previous_rate_cents,effective_from,created_at').eq('employee_id', emp.id).order('effective_from', { ascending: false });
-    if (error) setMsg(error.message); else setRates((data as Rate[]) ?? []);
+    const { data, error } = await supabase.from('compensation_concepts')
+      .select('id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,reason,created_at')
+      .eq('employee_id', emp.id).order('effective_from', { ascending: false }).order('created_at', { ascending: false });
+    if (error) setMsg(error.message); else setRows((data as ConceptRow[]) ?? []);
   }, [emp.id]);
   useEffect(() => { load(); }, [load]);
 
-  async function add(e: React.FormEvent) {
-    e.preventDefault(); setMsg(null);
-    const cents = pesosToCents(amount);
-    if (cents === null) return setMsg('Importe inválido. Usa números, por ejemplo 120 o 120.50');
-    if (!window.confirm(`¿Registrar pago por hora de ${formatMXN(cents)} a partir del ${from}? Este registro no se puede borrar ni editar.`)) return;
-    const { error } = await supabase.from('employee_compensation_history')
-      .insert({ employee_id: emp.id, company_id: emp.company_id, hourly_rate_cents: cents, effective_from: from });
-    if (error) return setMsg(error.message.includes('duplicate') ? 'Ya existe un registro con esa fecha de vigencia.' : error.message);
-    setAmount(''); load();
+  const today = new Date().toLocaleDateString('en-CA');
+  const current = Object.values(rows.filter(r => r.effective_from <= today)
+    .reduce<Record<string, ConceptRow>>((m, r) => (m[r.concept_key] ? m : { ...m, [r.concept_key]: r }), {})).filter(r => r.active);
+  const scheduled = rows.filter(r => r.effective_from > today);
+
+  async function end(r: ConceptRow) {
+    const from = window.prompt(`Terminar "${r.label}". ¿Desde qué fecha deja de pagarse? (AAAA-MM-DD)`, today);
+    if (!from) return;
+    const reason = window.prompt('Motivo:'); if (!reason?.trim()) return setMsg('El motivo es obligatorio.');
+    const { error } = await supabase.from('compensation_concepts').insert({ company_id: emp.company_id, employee_id: emp.id,
+      concept_key: r.concept_key, label: r.label, kind: r.kind, amount_cents: r.amount_cents, weekdays: r.weekdays,
+      active: false, effective_from: from, reason: reason.trim() });
+    if (error) setMsg(error.message.includes('duplicate') ? 'Ya hay un cambio de este concepto con esa fecha.' : error.message); else load();
   }
 
   return (
     <div className="space-y-2 border-t pt-4">
-      <h4 className="text-sm font-semibold">Pago por hora (confidencial)</h4>
-      <p className="text-sm">Vigente: <b>{rates[0] ? formatMXN(rates[0].hourly_rate_cents) : 'Sin registrar'}</b></p>
-      {can('salary', 'edit') && (
-        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
-          <label className="text-xs">Nuevo pago por hora ($)<input className={`${field} w-36`} inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} required /></label>
-          <label className="text-xs">Vigente desde<input type="date" className={`${field} w-40`} value={from} onChange={e => setFrom(e.target.value)} required /></label>
-          <button className="rounded-lg border border-brand px-3 py-2 text-sm text-brand">Registrar</button>
-        </form>)}
+      <div className="flex items-center"><h4 className="text-sm font-semibold">Pago (confidencial)</h4>
+        {can('salary', 'edit') && <button className="ml-auto text-sm text-brand" onClick={() => setEdit('new')}>+ Agregar concepto</button>}</div>
+      {current.length === 0 && <p className="text-sm text-slate-500">Sin conceptos de pago vigentes.</p>}
+      {current.map(r => (
+        <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+          <b>{r.label}</b><span>{formatMXN(r.amount_cents)} {KIND_LABEL[r.kind]}</span>
+          {r.kind !== 'fijo' && <span className="text-xs text-slate-500">{r.weekdays.length === 7 ? 'todos los días' : r.weekdays.map(d => DAYS[d]).join(', ')}</span>}
+          <span className="text-xs text-slate-400">desde {r.effective_from}</span>
+          {can('salary', 'edit') && <span className="ml-auto space-x-3 text-xs">
+            <button className="text-brand" onClick={() => setEdit(r)}>Cambiar</button>
+            <button className="text-red-700" onClick={() => end(r)}>Terminar</button></span>}
+        </div>))}
+      {scheduled.length > 0 && <p className="text-xs text-slate-500">Programados: {scheduled.map(r => `${r.label} ${r.active ? formatMXN(r.amount_cents) : '(termina)'} desde ${r.effective_from}`).join(' · ')}</p>}
+      {edit && <ConceptForm emp={emp} base={edit === 'new' ? null : edit} onDone={() => { setEdit(null); load(); }} onCancel={() => setEdit(null)} />}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      {rates.length > 0 && (
-        <table className="w-full text-left text-xs">
-          <thead className="text-slate-500"><tr><th>Vigente desde</th><th>Importe</th><th>Anterior</th><th>Registrado</th></tr></thead>
-          <tbody>{rates.map(r => (<tr key={r.id} className="border-t">
-            <td className="py-1">{r.effective_from}</td><td>{formatMXN(r.hourly_rate_cents)}</td>
-            <td>{r.previous_rate_cents === null ? '—' : formatMXN(r.previous_rate_cents)}</td><td>{r.created_at.slice(0, 16).replace('T', ' ')}</td></tr>))}</tbody>
-        </table>)}
+      {rows.length > 0 && <details className="text-xs"><summary className="cursor-pointer text-slate-500">Historial completo</summary>
+        <table className="mt-1 w-full text-left"><thead className="text-slate-500"><tr><th>Vigente desde</th><th>Concepto</th><th>Importe</th><th>Motivo</th><th>Registrado</th></tr></thead>
+          <tbody>{rows.map(r => <tr key={r.id} className="border-t"><td className="py-1">{r.effective_from}</td><td>{r.label}{!r.active && ' (terminado)'}</td>
+            <td>{formatMXN(r.amount_cents)} {KIND_LABEL[r.kind]}</td><td>{r.reason}</td><td>{r.created_at.slice(0, 16).replace('T', ' ')}</td></tr>)}</tbody></table></details>}
     </div>
+  );
+}
+
+function ConceptForm({ emp, base, onDone, onCancel }: { emp: Emp; base: ConceptRow | null; onDone: () => void; onCancel: () => void }) {
+  const [label, setLabel] = useState(base?.label ?? ''); const [kind, setKind] = useState<Kind>(base?.kind ?? 'por_hora');
+  const [amount, setAmount] = useState(base ? String(base.amount_cents / 100) : '');
+  const [days, setDays] = useState<number[]>(base?.weekdays ?? [0, 1, 2, 3, 4, 5, 6]);
+  const [from, setFrom] = useState(new Date().toLocaleDateString('en-CA')); const [reason, setReason] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  async function save(e: React.FormEvent) {
+    e.preventDefault(); setMsg(null);
+    const cents = pesosToCents(amount);
+    if (cents === null) return setMsg('Importe inválido. Usa números, por ejemplo 120 o 120.50');
+    if (kind !== 'fijo' && days.length === 0) return setMsg('Marca al menos un día.');
+    if (!window.confirm(`¿Registrar "${label}" de ${formatMXN(cents)} ${KIND_LABEL[kind]} desde el ${from}? No se puede borrar después; para corregir se registra otro cambio.`)) return;
+    const { error } = await supabase.from('compensation_concepts').insert({ company_id: emp.company_id, employee_id: emp.id,
+      concept_key: base?.concept_key ?? slug(label), label: label.trim(), kind, amount_cents: cents,
+      weekdays: kind === 'fijo' ? [0, 1, 2, 3, 4, 5, 6] : [...days].sort((a, b) => a - b), effective_from: from, reason: reason.trim() });
+    if (error) return setMsg(error.message.includes('duplicate') ? 'Ya existe un concepto con ese nombre y fecha. Usa otro nombre o fecha.' : error.message);
+    onDone();
+  }
+  return (
+    <form onSubmit={save} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
+      <label className="text-xs">Concepto<input required disabled={!!base} className={field} placeholder="Ej. Portero, Limpieza, Clases" value={label} onChange={e => setLabel(e.target.value)} /></label>
+      <label className="text-xs">Tipo<select className={field} value={kind} onChange={e => setKind(e.target.value as Kind)}>
+        <option value="por_hora">Por hora trabajada</option><option value="por_dia">Por día asistido</option><option value="fijo">Fijo por periodo (semana o quincena)</option></select></label>
+      <label className="text-xs">Importe ($){kind === 'por_hora' ? ' por hora' : kind === 'por_dia' ? ' por día' : ' por periodo'}
+        <input required inputMode="decimal" className={field} value={amount} onChange={e => setAmount(e.target.value)} /></label>
+      <label className="text-xs">Vigente desde<input type="date" required className={field} value={from} onChange={e => setFrom(e.target.value)} /></label>
+      {kind !== 'fijo' && <fieldset className="text-xs sm:col-span-2"><legend>Días en que aplica</legend><div className="mt-1 flex flex-wrap gap-3">
+        {DAYS.map((d, i) => <label key={i} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={days.includes(i)}
+          onChange={e => setDays(w => e.target.checked ? [...w, i] : w.filter(x => x !== i))} />{d}</label>)}</div></fieldset>}
+      <label className="text-xs sm:col-span-2">Motivo<input required className={field} value={reason} onChange={e => setReason(e.target.value)} /></label>
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700 sm:col-span-2">{msg}</p>}
+      <div className="flex gap-2 sm:col-span-2"><button className="rounded-lg border border-brand px-3 py-2 text-sm text-brand">Guardar</button>
+        <button type="button" className="text-sm" onClick={onCancel}>Cancelar</button></div>
+    </form>
   );
 }
 
