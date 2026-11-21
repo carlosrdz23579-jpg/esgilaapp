@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { formatMXN, pesosToCents } from '../lib/money';
+import WorkSchedulePanel from './WorkSchedule';
 
 type EState = 'activo' | 'suspendido' | 'baja';
 interface Dept { id: string; company_id: string; name: string; is_active: boolean }
@@ -199,6 +200,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
           </div>
         </form>
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
+        {emp && can('payroll_hours') && <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
         {emp && can('payroll') && <AdjustmentsPanel emp={emp} table="extra_earnings" title="Ingresos extra" newLabel="+ Nuevo ingreso extra"
           placeholder="Ej. Bono por competencia" help="Bonos, premios o pagos adicionales, para cualquier tipo de sueldo (incluido el fijo). Solo se pagan los autorizados; quien lo captura no puede autorizarlo (salvo el director)." />}

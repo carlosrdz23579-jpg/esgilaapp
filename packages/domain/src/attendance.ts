@@ -1,0 +1,71 @@
+// Asistencia de un día: qué horario aplica (base + excepciones) y cómo quedan las excepciones
+// después de la revisión del nominista. Sin dependencias.
+import { evaluateDay, type Block, type DayEvaluation, type DayIssue } from './checador.ts';
+
+export interface WeeklyBlock { weekday: number; start: string; end: string }   // 0 domingo … 6 sábado
+export type ExceptionKind = 'clase_extra' | 'curso' | 'competencia' | 'sin_actividad' | 'otro';
+export interface DayException { date: string; kind: ExceptionKind; blocks: Block[]; replacesBase: boolean }
+
+const weekday = (iso: string) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10))).getUTCDay();
+
+/** Horario de una fecha: el base de ese día de la semana, más (o en lugar de) las excepciones del día. */
+export function blocksForDate(date: string, weekly: readonly WeeklyBlock[], exceptions: readonly DayException[]): Block[] {
+  const ex = exceptions.filter(e => e.date === date);
+  const extra = ex.filter(e => e.kind !== 'sin_actividad').flatMap(e => e.blocks);
+  const base = weekly.filter(b => b.weekday === weekday(date)).map(b => ({ start: b.start, end: b.end }));
+  if (ex.some(e => e.replacesBase || e.kind === 'sin_actividad')) return sortBlocks(extra);
+  return sortBlocks([...base, ...extra]);
+}
+const sortBlocks = (b: Block[]) => [...b].sort((x, y) => x.start.localeCompare(y.start));
+
+// ---- Revisión del nominista ----
+export type ReviewKind =
+  | 'aprobar_extra'       // el trabajo fuera de horario se paga (clase extra, curso…)
+  | 'justificar_falta'    // permiso, incapacidad, vacaciones: no se descuenta
+  | 'quitar_retardo'      // el retardo no cuenta
+  | 'corregir_checadas'   // reemplaza las checadas del día (p. ej. olvidó checar salida)
+  | 'aceptar';            // se revisó y se deja como está
+export interface Review { date: string; kind: ReviewKind; times?: string[]; reason: string }
+
+export interface ReviewedDay extends DayEvaluation {
+  punches: string[];
+  approvedExtraMinutes: number;
+  excused: boolean;
+  attended: boolean;
+  pending: DayIssue[];      // lo que falta revisar
+  resolvedBy: ReviewKind[];
+}
+
+const minutes = (b: Block) => (+b.end.slice(0, 2) * 60 + +b.end.slice(3)) - (+b.start.slice(0, 2) * 60 + +b.start.slice(3));
+
+export function reviewDay(date: string, rawPunches: readonly string[], blocks: readonly Block[], toleranceMin: number,
+  reviews: readonly Review[]): ReviewedDay {
+  const mine = reviews.filter(r => r.date === date);
+  const fix = [...mine].reverse().find(r => r.kind === 'corregir_checadas');
+  const punches = [...(fix?.times ?? rawPunches)].sort();
+  const ev = evaluateDay(date, punches, [...blocks], toleranceMin);
+  const kinds = new Set(mine.map(r => r.kind));
+  let pending = [...ev.issues];
+  let approvedExtraMinutes = 0;
+  if (kinds.has('aprobar_extra')) {
+    approvedExtraMinutes = ev.outsideBlocks.reduce((n, b) => n + minutes(b), 0);
+    pending = pending.filter(i => i !== 'fuera_de_horario' && i !== 'sin_horario');
+  }
+  const excused = kinds.has('justificar_falta');
+  if (excused) pending = pending.filter(i => i !== 'falta');
+  const lateMinutes = kinds.has('quitar_retardo') ? 0 : ev.lateMinutes;
+  if (kinds.has('quitar_retardo')) pending = pending.filter(i => i !== 'retardo');
+  if (kinds.has('aceptar')) pending = [];
+  const issues = kinds.has('quitar_retardo') ? ev.issues.filter(i => i !== 'retardo') : ev.issues;
+  return {
+    ...ev, issues, lateMinutes, punches, approvedExtraMinutes, excused,
+    paidMinutes: ev.paidMinutes + approvedExtraMinutes,
+    attended: punches.length >= 2,
+    pending, resolvedBy: [...kinds],
+  };
+}
+
+export const ISSUE_LABEL: Record<DayIssue, string> = {
+  falta: 'Falta', retardo: 'Retardo', salida_temprana: 'Salida temprana', checada_incompleta: 'Checada incompleta',
+  fuera_de_horario: 'Trabajo fuera de horario', sin_horario: 'Checó sin tener horario',
+};

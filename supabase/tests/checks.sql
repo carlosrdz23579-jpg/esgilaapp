@@ -212,3 +212,35 @@ begin
   reset role;
   raise notice 'OK: ingresos extra';
 end $$;
+
+-- 0012: checadas de dos checadores para la misma persona; resubida gana; revisiones.
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        emp uuid := (select id from public.employees where full_name = 'Coach 1');   -- ligado a CAR '17','30' y Viñedos '28'
+        i1 uuid; i2 uuid; i3 uuid; r uuid; n int; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.checker_imports (company_id, from_date, to_date, file_name) values (car, '2026-10-15', '2026-10-29', 'car.xls') returning id into i1;
+  insert into public.checker_punches (import_id, company_id, device_id, date, times) values
+    (i1, car, '17', '2026-10-16', '{16:03,20:01}'), (i1, car, '30', '2026-10-19', '{16:00,20:00}');
+  insert into public.checker_imports (company_id, from_date, to_date, file_name) values (vin, '2026-10-15', '2026-10-29', 'vin.xls') returning id into i2;
+  insert into public.checker_punches (import_id, company_id, device_id, date, times) values (i2, vin, '28', '2026-10-17', '{09:00,13:00}');
+  select count(*) into n from public.employee_punches(emp, '2026-10-15', '2026-10-29');
+  if n <> 3 then raise exception 'checadas cruzadas: %', n; end if;
+  -- resubida del checador de CAR corrige el día 16
+  insert into public.checker_imports (company_id, from_date, to_date, file_name) values (car, '2026-10-16', '2026-10-16', 'car2.xls') returning id into i3;
+  insert into public.checker_punches (import_id, company_id, device_id, date, times) values (i3, car, '17', '2026-10-16', '{16:00,20:05}');
+  if (select times from public.employee_punches(emp, '2026-10-16', '2026-10-16')) <> '{16:00,20:05}' then raise exception 'no ganó la subida más reciente'; end if;
+  ok := false; begin insert into public.checker_punches (import_id, company_id, device_id, date, times) values (i3, car, '17', '2026-10-20', '{16:00}');
+  exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó checada fuera del rango del reporte'; end if;
+  insert into public.attendance_reviews (company_id, employee_id, date, kind, reason) values (car, emp, '2026-10-17', 'aprobar_extra', 'competencia') returning id into r;
+  ok := false; begin update public.attendance_reviews set reason = 'x' where id = r; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó una revisión'; end if;
+  update public.attendance_reviews set cancelled_at = now() where id = r;
+  reset role;
+  raise notice 'OK: checadas de dos checadores, resubida, revisiones';
+end $$;

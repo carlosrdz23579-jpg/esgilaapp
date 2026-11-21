@@ -7,10 +7,10 @@ Stack: React + TypeScript + Tailwind (Vite) y Supabase. Decisiones fijas en `doc
 | Ruta | Qué es |
 |---|---|
 | `docs/ARQUITECTURA.md` | Decisiones técnicas y mapa de módulos |
-| `supabase/migrations/0001…0011` | Esquema, permisos, RLS, calendarios de pago, Head Coach, horarios, checador (entre sucursales), conceptos de pago, tolerancia por empresa, descuentos, ingresos extra |
+| `supabase/migrations/0001…0012` | Esquema, permisos, RLS, calendarios de pago, Head Coach, horarios, checador (entre sucursales), conceptos de pago, tolerancia por empresa, descuentos, ingresos extra, checadas y revisión de asistencia |
 | `supabase/seed/` | Carga inicial (ESGILA CAR y Viñedos) y calendario quincenal; se pueden repetir sin duplicar |
 | `packages/domain/src` | Cálculo puro: nómina, efectivo, calendario de pagos e importador del reloj checador (centavos/minutos enteros) |
-| `apps/web` | Aplicación React (inicio de sesión, menú por permisos, Empleados, Empresas y calendarios) |
+| `apps/web` | Aplicación React: Empleados (horario, pago, descuentos, ingresos extra, Head Coach), Empresas y calendarios, Asistencia (subir reporte del checador y revisar excepciones) |
 
 ## Reglas de pago de ESGILA (en `pay-calendar.ts` y migración 0006)
 
@@ -35,3 +35,7 @@ cd apps/web && npm install && npx tsc -p tsconfig.json --noEmit && npx vite buil
 ## Migraciones
 
 Se aplican en orden, cada una una sola vez, en el SQL Editor de Supabase. 0003 y 0004 se aplicaron a mano; aquí quedan registradas para que el repositorio coincida con la base de datos. `apps/web/.env.local` nunca se sube.
+
+## Lectura de Excel (SheetJS)
+
+`apps/web` usa SheetJS desde su CDN oficial (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`), como recomienda el proyecto; la versión de npm (0.18.5) está abandonada y tiene vulnerabilidades conocidas. Se carga solo al abrir la pantalla de Asistencia. El importador se verificó con los reportes reales de octubre de ambos checadores (no incluidos en el repositorio).
