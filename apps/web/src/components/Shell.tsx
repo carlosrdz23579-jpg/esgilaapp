@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import Employees from './Employees';
+import Companies from './Companies';
 
 interface Mod { key: string; label: string; icon: string; visible: (a: ReturnType<typeof useAuth>) => boolean }
 const ALWAYS = () => true;
@@ -54,7 +55,7 @@ export default function Shell() {
         </header>
         <main className="flex-1 p-4">
           <h2 className="mb-4 text-xl font-semibold">{current?.label}</h2>
-          {current?.key === 'empleados' ? <Employees /> : (
+          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : (
             <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
               Módulo en construcción (aún sin funcionalidad). Empresas cargadas: {auth.companies.length}.
             </div>)}

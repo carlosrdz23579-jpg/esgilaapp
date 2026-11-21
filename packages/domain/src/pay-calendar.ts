@@ -1,6 +1,11 @@
 // Calendario de pagos. Sin dependencias. Fechas como 'YYYY-MM-DD' (calendario, sin zona horaria).
 export type Frequency = 'semanal' | 'quincenal' | 'mensual';
 export type WeekendRule = 'antes' | 'despues' | 'ninguno';
+/** 'dia_anterior': el día de pago NO entra en el periodo que se paga (cuenta en el siguiente). Regla de ESGILA.
+ *  'dia_de_pago': el periodo termina el mismo día de pago. */
+export type Cutoff = 'dia_anterior' | 'dia_de_pago';
+/** Días que trabaja la persona (0 domingo … 6 sábado). Por defecto lunes a sábado. */
+export const DEFAULT_WORK_DAYS: readonly number[] = [1, 2, 3, 4, 5, 6];
 
 export interface ScheduleConfig {
   frequency: Frequency;
@@ -8,11 +13,15 @@ export interface ScheduleConfig {
   biweeklyDays?: [number, number];   // p. ej. [15, 31]; 31 = último día del mes
   monthlyDay?: number;               // 31 = último día del mes
   weekendRule: WeekendRule;
+  cutoff?: Cutoff;                   // por defecto 'dia_anterior'
+  workDays?: readonly number[];      // días laborables de la persona; por defecto lunes a sábado
   holidays?: ReadonlySet<string>;    // días inhábiles 'YYYY-MM-DD'
 }
 
-/** Un periodo termina en su fecha nominal; el pago puede moverse por fin de semana/inhábil. */
-export interface PayPeriod { start: string; end: string; payDate: string }
+/** `nominal` es la fecha de pago del calendario (15, último día…). El periodo se corta respecto a ella
+ *  (nunca respecto al pago real), así ninguna quincena se alarga ni se acorta. `payDate` es cuándo se paga
+ *  realmente a esa persona: si `nominal` no es laborable para ella, su último día laborable anterior (regla 'antes'). */
+export interface PayPeriod { start: string; end: string; nominal: string; payDate: string }
 
 const DAY = 86400000;
 const toMs = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
@@ -48,27 +57,34 @@ function nominalEnds(cfg: ScheduleConfig, from: string, to: string): string[] {
   return [...out].sort();
 }
 
-const isBusinessDay = (iso: string, holidays?: ReadonlySet<string>) => {
-  const w = weekdayOf(iso);
-  return w !== 0 && w !== 6 && !(holidays?.has(iso));
-};
+const isWorkDay = (iso: string, workDays: readonly number[], holidays?: ReadonlySet<string>) =>
+  workDays.includes(weekdayOf(iso)) && !(holidays?.has(iso));
 
-export function adjustPayDate(iso: string, rule: WeekendRule, holidays?: ReadonlySet<string>): string {
+export function adjustPayDate(iso: string, rule: WeekendRule, holidays?: ReadonlySet<string>,
+  workDays: readonly number[] = DEFAULT_WORK_DAYS): string {
   if (rule === 'ninguno') return iso;
+  if (workDays.length === 0) throw new Error('La persona no tiene días laborables configurados');
   const step = rule === 'antes' ? -1 : 1;
   let d = iso;
-  for (let i = 0; i < 20 && !isBusinessDay(d, holidays); i++) d = addDays(d, step);
+  for (let i = 0; i < 20 && !isWorkDay(d, workDays, holidays); i++) d = addDays(d, step);
+  if (!isWorkDay(d, workDays, holidays)) throw new Error(`No se encontró día laborable cerca de ${iso}`);
   return d;
 }
 
-/** Periodos cuyo fin nominal cae entre `from` y `to` (inclusive). */
+/** Periodos cuya fecha de pago nominal cae entre `from` y `to` (inclusive). */
 export function periodsBetween(cfg: ScheduleConfig, from: string, to: string): PayPeriod[] {
-  const ends = nominalEnds(cfg, from, to);
+  const noms = nominalEnds(cfg, from, to);
+  const shift = (cfg.cutoff ?? 'dia_anterior') === 'dia_anterior' ? 0 : 1;
   const res: PayPeriod[] = [];
-  for (let i = 1; i < ends.length; i++) {
-    const end = ends[i];
-    if (end < from || end > to) continue;
-    res.push({ start: addDays(ends[i - 1], 1), end, payDate: adjustPayDate(end, cfg.weekendRule, cfg.holidays) });
+  for (let i = 1; i < noms.length; i++) {
+    const nominal = noms[i];
+    if (nominal < from || nominal > to) continue;
+    res.push({
+      start: addDays(noms[i - 1], shift),
+      end: addDays(nominal, shift - 1),
+      nominal,
+      payDate: adjustPayDate(nominal, cfg.weekendRule, cfg.holidays, cfg.workDays ?? DEFAULT_WORK_DAYS),
+    });
   }
   return res;
 }

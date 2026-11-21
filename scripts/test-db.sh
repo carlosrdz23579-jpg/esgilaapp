@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Aplica todas las migraciones y seeds en un Postgres 16 desechable y corre las verificaciones.
+# Uso: scripts/test-db.sh   (requiere binarios de PostgreSQL 16 en el PATH o en /usr/lib/postgresql/16/bin)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+B=${PGBIN:-/usr/lib/postgresql/16/bin}
+D=$(mktemp -d); PORT=${PORT:-5499}
+RUN() { if [ "$(id -u)" = 0 ]; then chown -R postgres "$D"; su postgres -c "$*"; else bash -c "$*"; fi; }
+RUN "$B/initdb -D $D -U postgres -A trust >/dev/null && $B/pg_ctl -D $D -o '-k /tmp -p $PORT' -l $D/log -w start >/dev/null"
+trap 'RUN "$B/pg_ctl -D $D -m fast stop >/dev/null"; rm -rf "$D"' EXIT
+P="psql -h /tmp -p $PORT -U postgres -v ON_ERROR_STOP=1 -q"
+$P -d postgres -c "create database t"; P="$P -d t"
+$P -f supabase/tests/supabase_stub.sql
+for f in supabase/migrations/*.sql; do echo "== $f"; $P -1 -f "$f"; done
+# Registro de los dos usuarios después de las migraciones (el trigger crea su app_users)
+$P -c "insert into auth.users(email) values ('aldost228@gmail.com'),('carlosrdz23579@gmail.com')"
+for f in supabase/seed/seed_inicial.sql supabase/seed/seed_calendarios.sql supabase/seed/seed_inicial.sql; do $P -f "$f" >/dev/null; done
+$P -f supabase/tests/checks.sql

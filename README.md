@@ -2,32 +2,36 @@
 
 Stack: React + TypeScript + Tailwind (Vite) y Supabase. Decisiones fijas en `docs/ARQUITECTURA.md`.
 
-## Contenido de este repositorio
+## Contenido
 
-| Ruta | Qué es | Estado |
-|---|---|---|
-| `docs/ARQUITECTURA.md` | Decisiones técnicas y mapa de módulos | Original |
-| `supabase/migrations/0001…0005` | Esquema, permisos, RLS, Head Coach, calendarios de pago | Probadas en orden sobre Postgres 16 limpio |
-| `supabase/seed/` | Carga inicial (ESGILA CAR y Viñedos) y calendario quincenal | Probadas; se pueden repetir sin duplicar |
-| `packages/domain/src` | Cálculo de nómina y de efectivo en enteros (centavos/minutos) | 11 pruebas pasan |
+| Ruta | Qué es |
+|---|---|
+| `docs/ARQUITECTURA.md` | Decisiones técnicas y mapa de módulos |
+| `supabase/migrations/0001…0006` | Esquema, permisos, RLS, Head Coach, calendarios de pago, corte y días laborables |
+| `supabase/seed/` | Carga inicial (ESGILA CAR y Viñedos) y calendario quincenal; se pueden repetir sin duplicar |
+| `packages/domain/src` | Cálculo puro: nómina, efectivo y calendario de pagos (centavos/minutos enteros) |
+| `apps/web` | Aplicación React (inicio de sesión, menú por permisos, Empleados, Empresas y calendarios) |
 
-## Falta en este repositorio
+## Reglas de pago de ESGILA (en `pay-calendar.ts` y migración 0006)
 
-Estas partes existen solo en la copia local de la computadora de Carlos y hay que subirlas:
+- Quincenal: pago el 15 y el último día del mes.
+- El día de pago **no** entra en la quincena que se paga: pago del 15 = del último día del mes anterior al 14; pago del último día = del 15 al penúltimo.
+- Si el día de pago no es laborable para la persona, se le paga su último día laborable anterior (lunes a sábado → sábado; lunes a jueves → jueves). El corte del periodo no se mueve.
 
-- `apps/web/` completa (App.tsx, lib/auth.tsx, lib/supabase.ts, lib/money.ts, components/Shell.tsx, components/Employees.tsx, módulo Empresas y calendarios, package.json, index.css…)
-- `packages/domain/src/pay-calendar.ts` y sus pruebas (etapa 5, 18 pruebas)
-- `apps/web/.env.example`
-
-`apps/web/.env.local` **no** se sube nunca.
-
-## Probar el dominio
+## Pruebas
 
 ```
+# Lógica (Node 22+)
 cd packages/domain/src
-node --experimental-strip-types --test domain.test.ts
+node --experimental-strip-types --test domain.test.ts pay-calendar.test.ts
+
+# Base de datos: todas las migraciones + seeds + verificaciones en un Postgres 16 desechable
+scripts/test-db.sh
+
+# Aplicación
+cd apps/web && npm install && npx tsc -p tsconfig.json --noEmit && npx vite build
 ```
 
 ## Migraciones
 
-Se aplican en orden, cada una una sola vez (SQL Editor de Supabase). 0003 y 0004 se aplicaron a mano en Supabase; aquí quedan registradas para que el repositorio coincida con la base de datos.
+Se aplican en orden, cada una una sola vez, en el SQL Editor de Supabase. 0003 y 0004 se aplicaron a mano; aquí quedan registradas para que el repositorio coincida con la base de datos. `apps/web/.env.local` nunca se sube.

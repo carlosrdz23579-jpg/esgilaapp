@@ -10,11 +10,11 @@ interface Emp {
   id: string; company_id: string; full_name: string; department_id: string; group_id: string | null;
   job_title: string | null; state: EState; hire_date: string | null; phone: string | null; email: string | null;
   curp: string | null; rfc: string | null; birth_date: string | null; address: string | null; contract_type: string | null;
-  is_head_coach: boolean;
+  is_head_coach: boolean; work_days: number[];
 }
 interface Rate { id: number; hourly_rate_cents: number; previous_rate_cents: number | null; effective_from: string; created_at: string }
 
-const COLS = 'id,company_id,full_name,department_id,group_id,job_title,state,hire_date,phone,email,curp,rfc,birth_date,address,contract_type,is_head_coach';
+const COLS = 'id,company_id,full_name,department_id,group_id,job_title,state,hire_date,phone,email,curp,rfc,birth_date,address,contract_type,is_head_coach,work_days';
 const EMPTY = { full_name: '', company_id: '', department_id: '', group_id: '', job_title: '', hire_date: '', phone: '', email: '',
   curp: '', rfc: '', birth_date: '', address: '', contract_type: '' };
 const field = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
@@ -110,6 +110,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   const [f, setF] = useState({ ...EMPTY, ...(emp ? Object.fromEntries(Object.entries(emp).map(([k, v]) => [k, v ?? ''])) : {}), company_id: initialCompany } as typeof EMPTY);
   const [state, setState] = useState<EState>(emp?.state ?? 'activo');
   const [head, setHead] = useState<boolean>(emp?.is_head_coach ?? false);
+  const [workDays, setWorkDays] = useState<number[]>(emp?.work_days ?? [1, 2, 3, 4, 5, 6]);
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof EMPTY, v: string) => setF(p => ({ ...p, [k]: v }));
   const myDepts = useMemo(() => depts.filter(d => d.company_id === f.company_id && (d.is_active || d.id === f.department_id)), [depts, f.company_id, f.department_id]);
@@ -118,11 +119,13 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   const isCoachDept = depts.find(d => d.id === f.department_id)?.name.trim().toLowerCase() === 'coach';
 
   async function save(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setMsg(null);
+    e.preventDefault(); setMsg(null);
+    if (workDays.length === 0) return setMsg('Marca al menos un día laborable.');
+    setBusy(true);
     const nz = (s: string) => (s.trim() === '' ? null : s.trim());
     const payload = { full_name: f.full_name.trim(), department_id: f.department_id, group_id: nz(f.group_id), job_title: nz(f.job_title),
       hire_date: nz(f.hire_date), phone: nz(f.phone), email: nz(f.email), curp: nz(f.curp?.toUpperCase?.() ?? ''), rfc: nz(f.rfc?.toUpperCase?.() ?? ''),
-      birth_date: nz(f.birth_date), address: nz(f.address), contract_type: nz(f.contract_type), is_head_coach: isCoachDept ? head : false };
+      birth_date: nz(f.birth_date), address: nz(f.address), contract_type: nz(f.contract_type), is_head_coach: isCoachDept ? head : false, work_days: [...workDays].sort((a, b) => a - b) };
     const res = emp
       ? await supabase.from('employees').update(payload).eq('id', emp.id).select('id')
       : await supabase.from('employees').insert({ ...payload, company_id: f.company_id }).select('id');
@@ -164,6 +167,14 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
               <option value="">Sin grupo</option>{myGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select></label>
           {isCoachDept && <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={head} onChange={e => setHead(e.target.checked)} />Es Head Coach</label>}
+          <fieldset className="sm:col-span-2 text-xs">
+            <legend>Días que trabaja (si el día de pago no es uno de ellos, se le paga su día laborable anterior)</legend>
+            <div className="mt-1 flex flex-wrap gap-3">
+              {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map((d, i) => (
+                <label key={i} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={workDays.includes(i)}
+                  onChange={e => setWorkDays(w => e.target.checked ? [...w, i] : w.filter(x => x !== i))} />{d}</label>))}
+            </div>
+          </fieldset>
           <label className="text-xs">Puesto<input className={field} value={f.job_title} onChange={e => set('job_title', e.target.value)} /></label>
           <label className="text-xs">Fecha de ingreso<input type="date" className={field} value={f.hire_date} onChange={e => set('hire_date', e.target.value)} /></label>
           <label className="text-xs">Tipo de contratación<input className={field} value={f.contract_type} onChange={e => set('contract_type', e.target.value)} /></label>
