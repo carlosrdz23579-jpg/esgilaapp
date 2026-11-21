@@ -308,3 +308,13 @@ begin
   reset role;
   raise notice 'OK: nómina (versiones, restaurar, publicar, confirmar solo la propia, autorizar por otro, reabrir director)';
 end $$;
+
+-- 0014: tarifa de referencia para retardo
+do $$
+declare car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+begin
+  insert into public.compensation_concepts (company_id, employee_id, concept_key, label, kind, amount_cents, effective_from, reason)
+    values (car, c1, 'base_retardo', 'Base para retardo', 'tarifa_retardo', 6500, current_date, 'prueba');
+  raise notice 'OK: tarifa_retardo';
+end $$;

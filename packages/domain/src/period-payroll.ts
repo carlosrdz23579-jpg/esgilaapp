@@ -4,7 +4,8 @@ import { mulDivRound, type Cents } from './payroll.ts';
 import { conceptEarnings, hourlyRateForLate, type Concept, type WorkDay } from './concepts.ts';
 import { deductionsForPeriod, totalDeductions, type Deduction, type Period } from './deductions.ts';
 
-export interface PeriodDay extends WorkDay { late: boolean }
+export interface PeriodDay extends WorkDay { late: boolean; scheduled?: boolean }
+export type DayStatus = '' | 'Tarde' | 'Falta' | 'Justificada';
 export interface PeriodInput {
   period: Period;
   payDate: string;
@@ -13,11 +14,15 @@ export interface PeriodInput {
   lateDeductionBps: number;        // 2500 = 25 % de una hora por cada retardo
   extras: Deduction[];             // ingresos extra (misma forma que descuentos)
   deductions: Deduction[];
+  loanCents?: Cents;               // préstamos del periodo (módulo de préstamos)
 }
 export interface PeriodLine {
   payDate: string;
   grossCents: Cents; deductionCents: Cents; netCents: Cents;
+  reportedCents: Cents;            // como en el Excel: neta + préstamos (lo que se paga antes de préstamos)
   detail: {
+    days: { date: string; minutes: number; status: DayStatus }[];
+    loans: string;
     concepts: { key: string; label: string; kind: string; units: number; amount: string; detail: string }[];
     attendedDays: number; paidMinutes: number; faltas: number; excused: number; retardos: number;
     lateDeduction: { count: number; perLate: string; total: string } | null;
@@ -45,18 +50,23 @@ export function computePeriodLine(i: PeriodInput): PeriodLine {
   }
   if (i.concepts.length === 0) warnings.push('Sin conceptos de pago vigentes: no se le calcula nada.');
 
+  const loans = i.loanCents ?? 0n;
   const gross = conceptsTotal + totalDeductions(extras);
-  const deduction = lateTotal + totalDeductions(deds);
+  const deduction = lateTotal + totalDeductions(deds) + loans;
   const net = gross - deduction;
   if (net < 0n) warnings.push('El neto es negativo: revisa descuentos.');
 
   return {
-    payDate: i.payDate, grossCents: gross, deductionCents: deduction, netCents: net,
+    payDate: i.payDate, grossCents: gross, deductionCents: deduction, netCents: net, reportedCents: net + loans,
     detail: {
+      days: i.days.filter(d => d.scheduled || d.attended || d.paidMinutes > 0 || d.excused).map(d => ({
+        date: d.date, minutes: d.paidMinutes,
+        status: (d.excused ? 'Justificada' : !d.attended && d.scheduled ? 'Falta' : d.late ? 'Tarde' : '') as DayStatus })),
+      loans: loans.toString(),
       concepts: lines.map(l => ({ key: l.key, label: l.label, kind: l.kind, units: l.units, amount: l.amountCents.toString(), detail: l.detail })),
       attendedDays: i.days.filter(d => d.attended).length,
       paidMinutes: i.days.reduce((n, d) => n + d.paidMinutes, 0),
-      faltas: i.days.filter(d => !d.attended && !d.excused && i.concepts.some(c => c.weekdays.includes(new Date(d.date + 'T12:00:00Z').getUTCDay()))).length,
+      faltas: i.days.filter(d => !d.attended && !d.excused && (d.scheduled ?? i.concepts.some(c => c.weekdays.includes(new Date(d.date + 'T12:00:00Z').getUTCDay())))).length,
       excused: i.days.filter(d => d.excused).length,
       retardos, lateDeduction: late,
       extras: extras.map(e => ({ label: e.label, amount: e.amountCents.toString() })),

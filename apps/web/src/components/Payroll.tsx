@@ -144,13 +144,14 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         const a = att.find(x => x.emp.id === emp.id)!;
         const line = computePeriodLine({
           period: { start: period.start, end: period.end }, payDate, lateDeductionBps: LATE_BPS, concepts,
-          days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused, late: d.issues.includes('retardo') })),
+          days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
+            late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0 })),
           extras: (xe.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           deductions: (dd.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
         });
         if (a.days.some(d => d.pending.length) || !a.hasSchedule) line.detail.warnings.push('Tenía asistencia sin revisar al calcular.');
         return { employee_id: emp.id, pay_date: line.payDate, gross_cents: line.grossCents.toString(), deduction_cents: line.deductionCents.toString(),
-          net_cents: line.netCents.toString(), reported_cents: null, detail: line.detail };
+          net_cents: line.netCents.toString(), reported_cents: line.reportedCents.toString(), detail: line.detail };
       });
       const totals = { net: out.reduce((n, l) => n + BigInt(l.net_cents), 0n).toString(), people: out.length };
       const note = run ? window.prompt('¿Qué cambió en este recálculo? (queda en el historial de versiones)', 'Recálculo') : 'Cálculo inicial';
@@ -237,7 +238,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
                 const c = conf(l.employee_id);
                 return [
                   <tr key={l.employee_id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => setOpen(open === l.employee_id ? null : l.employee_id)}>
-                    <td className="px-3 py-2 font-medium">{names[l.employee_id] ?? '—'}{l.detail.warnings.length > 0 && <span title={l.detail.warnings.join('\n')} className="ml-1 text-amber-600">⚠</span>}</td>
+                    <td className="px-3 py-2 font-medium"><span className="mr-1 text-xs text-brand">{open === l.employee_id ? '▾' : '▸'}</span>{names[l.employee_id] ?? '—'}{l.detail.warnings.length > 0 && <span title={l.detail.warnings.join('\n')} className="ml-1 text-amber-600">⚠</span>}</td>
                     <td className="px-3 py-2 text-xs">{fdate(l.pay_date)}</td>
                     <td className="px-3 py-2 text-xs">{l.detail.attendedDays} días · {hm(l.detail.paidMinutes)} h{l.detail.retardos ? ` · ${l.detail.retardos} ret.` : ''}{l.detail.faltas ? ` · ${l.detail.faltas} faltas` : ''}</td>
                     <td className="px-3 py-2 text-right">{formatMXN(l.gross_cents)}</td><td className="px-3 py-2 text-right">{formatMXN(l.deduction_cents)}</td>
@@ -245,7 +246,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
                     <td className="px-3 py-2 text-xs">{!c ? <span className="text-slate-400">sin confirmar</span> : c.decision === 'confirmada' ? <span className="text-green-700">✓ confirmó</span>
                       : <span className="text-amber-700" title={c.comment ?? ''}>Observación: {c.comment}</span>}</td>
                   </tr>,
-                  open === l.employee_id && <tr key={l.employee_id + 'd'} className="bg-slate-50"><td colSpan={7} className="px-6 py-2"><LineDetail d={l.detail} /></td></tr>,
+                  open === l.employee_id && <tr key={l.employee_id + 'd'} className="bg-slate-50"><td colSpan={7} className="px-6 py-3"><LineDetail line={l} /></td></tr>,
                 ];
               })}
               <tr className="border-t bg-slate-50 font-semibold"><td className="px-3 py-2" colSpan={5}>Total ({lines.length} personas)</td><td className="px-3 py-2 text-right">{formatMXN(total)}</td><td /></tr>
@@ -256,15 +257,51 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
   );
 }
 
-function LineDetail({ d }: { d: Detail }) {
+/** Desglose como en el Excel: tabla por día (Día · Horas · Faltas) y resumen de la nómina. */
+function LineDetail({ line }: { line: Line }) {
+  const d = line.detail;
+  const days = d.days ?? [];                       // versiones anteriores a este desglose no lo traen
+  const conceptsTotal = d.concepts.reduce((n, c) => n + BigInt(c.amount), 0n);
+  const extras = d.extras.reduce((n, x) => n + BigInt(x.amount), 0n);
+  const late = BigInt(d.lateDeduction?.total ?? '0');
+  const other = d.deductions.reduce((n, x) => n + BigInt(x.amount), 0n);
+  const loans = BigInt(d.loans ?? '0');
+  const row = (label: string, value: React.ReactNode, strong = false) => (
+    <tr className={`border-t ${strong ? 'font-semibold' : ''}`}><td className="py-1.5">{label}</td><td className="py-1.5 text-right">{value}</td></tr>);
   return (
-    <div className="grid gap-1 text-xs sm:grid-cols-2">
-      <div>{d.concepts.map(c => <p key={c.key}>{c.label}: <b>{formatMXN(c.amount)}</b> <span className="text-slate-500">({c.detail})</span></p>)}
-        {d.extras.map((x, i) => <p key={i}>+ {x.label}: <b>{formatMXN(x.amount)}</b></p>)}</div>
-      <div>{d.lateDeduction && <p>− Rebaja por {d.lateDeduction.count} retardo(s) × {formatMXN(d.lateDeduction.perLate)}: <b>{formatMXN(d.lateDeduction.total)}</b></p>}
-        {d.deductions.map((x, i) => <p key={i}>− {x.label}: <b>{formatMXN(x.amount)}</b></p>)}
-        {d.excused > 0 && <p className="text-slate-500">{d.excused} falta(s) justificada(s)</p>}
-        {d.warnings.map((w, i) => <p key={i} className="text-amber-700">⚠ {w}</p>)}</div>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div>
+        <table className="w-full text-xs">
+          <thead><tr className="bg-slate-200 text-slate-700"><th className="px-2 py-1.5 text-left">Día</th><th className="px-2 py-1.5 text-right">Horas</th><th className="px-2 py-1.5 text-left">Faltas</th></tr></thead>
+          <tbody>
+            {days.length === 0 && <tr><td colSpan={3} className="px-2 py-2 text-slate-400">Recalcula para ver el desglose por día.</td></tr>}
+            {days.map(x => (
+              <tr key={x.date} className="border-t bg-white">
+                <td className="px-2 py-1">{fdate(x.date)}</td>
+                <td className="px-2 py-1 text-right">{(x.minutes / 60).toFixed(2)}</td>
+                <td className={`px-2 py-1 ${x.status === 'Falta' ? 'text-red-700' : x.status === 'Tarde' ? 'text-amber-700' : 'text-slate-500'}`}>{x.status || '—'}</td>
+              </tr>))}
+          </tbody>
+        </table>
+        {d.concepts.length > 0 && <div className="mt-2 text-xs text-slate-600">{d.concepts.map(c => <p key={c.key}>{c.label}: {formatMXN(c.amount)} <span className="text-slate-400">({c.detail})</span></p>)}</div>}
+      </div>
+      <table className="w-full self-start text-sm">
+        <thead><tr className="text-left"><th className="pb-1">Concepto</th><th className="pb-1 text-right">Importe</th></tr></thead>
+        <tbody>
+          {row('Total días', d.attendedDays)}
+          {row('Total horas', (d.paidMinutes / 60).toFixed(2))}
+          {row('Faltas / retardos', `${d.faltas} / ${d.retardos}`)}
+          {row('Nómina', formatMXN(conceptsTotal))}
+          {extras > 0n && d.extras.map((x, i) => <tr key={'x' + i} className="border-t"><td className="py-1.5">+ {x.label}</td><td className="py-1.5 text-right">{formatMXN(x.amount)}</td></tr>)}
+          {row('Rebajas por retardos', late ? `−${formatMXN(late)}` : formatMXN(0))}
+          {other > 0n && d.deductions.map((x, i) => <tr key={'d' + i} className="border-t"><td className="py-1.5">− {x.label}</td><td className="py-1.5 text-right">−{formatMXN(x.amount)}</td></tr>)}
+          {row('Préstamos', loans ? `−${formatMXN(loans)}` : formatMXN(0))}
+          {row('Nómina neta', formatMXN(line.net_cents), true)}
+          {row('Nómina reportada', line.reported_cents == null ? '—' : formatMXN(line.reported_cents))}
+          {d.excused > 0 && <tr><td colSpan={2} className="pt-1 text-xs text-slate-500">{d.excused} falta(s) justificada(s)</td></tr>}
+          {d.warnings.map((w, i) => <tr key={'w' + i}><td colSpan={2} className="pt-1 text-xs text-amber-700">⚠ {w}</td></tr>)}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -319,7 +356,7 @@ function MyPayroll() {
               <b>Pago del {fdate(it.line.pay_date)}</b><span className="text-xs text-slate-500">trabajo del {fdate(it.run.period_start)} al {fdate(it.run.period_end)}</span>
               <span className="ml-auto text-lg font-semibold">{formatMXN(it.line.net_cents)}</span>
             </div>
-            <LineDetail d={it.line.detail} />
+            <LineDetail line={it.line} />
             <div className="flex flex-wrap items-center gap-2 text-sm">
               {it.run.status === 'autorizada' ? <span className="text-green-700">Autorizada</span>
                 : it.conf ? <span className={it.conf.decision === 'confirmada' ? 'text-green-700' : 'text-amber-700'}>{it.conf.decision === 'confirmada' ? '✓ La confirmaste' : `Dejaste una observación: ${it.conf.comment}`}</span>

@@ -3,7 +3,9 @@
 // Todo en enteros: centavos y minutos.
 import { mulDivRound, type Cents } from './payroll.ts';
 
-export type ConceptKind = 'por_hora' | 'por_dia' | 'fijo';
+// 'tarifa_retardo': no se paga; es la tarifa por hora de referencia para la rebaja por retardo de quien
+// cobra por día o fijo (p. ej. Madelin $300/día con rebaja sobre $65/h).
+export type ConceptKind = 'por_hora' | 'por_dia' | 'fijo' | 'tarifa_retardo';
 export interface Concept {
   key: string; label: string; kind: ConceptKind; amountCents: Cents;
   weekdays: readonly number[];          // días de la semana en que aplica (0 domingo … 6 sábado)
@@ -27,7 +29,7 @@ const weekday = (iso: string) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(
  *             La falta aparece como línea propia para que se vea, nunca se descuenta en silencio.
  */
 export function conceptEarnings(concepts: readonly Concept[], days: readonly WorkDay[]): ConceptLine[] {
-  return concepts.map(c => {
+  return concepts.filter(c => c.kind !== 'tarifa_retardo').map(c => {
     const applies = days.filter(d => c.weekdays.includes(weekday(d.date)));
     if (c.kind === 'por_hora') {
       const minutes = applies.reduce((n, d) => n + d.paidMinutes, 0);
@@ -48,8 +50,9 @@ export function conceptEarnings(concepts: readonly Concept[], days: readonly Wor
 
 const fmt = (c: Cents) => `$${(c / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${c % 100n ? '.' + (c % 100n).toString().padStart(2, '0') : ''}`;
 
-/** Tarifa de "una hora" para la rebaja por retardo: la del concepto por hora, si existe. */
+/** Tarifa de "una hora" para la rebaja por retardo: la de referencia si se definió; si no, la del pago por hora.
+ *  Sin ninguna de las dos (p. ej. sueldo fijo), no hay rebaja. */
 export function hourlyRateForLate(concepts: readonly Concept[]): Cents | null {
-  const h = concepts.find(c => c.kind === 'por_hora');
+  const h = concepts.find(c => c.kind === 'tarifa_retardo') ?? concepts.find(c => c.kind === 'por_hora');
   return h ? h.amountCents : null;
 }

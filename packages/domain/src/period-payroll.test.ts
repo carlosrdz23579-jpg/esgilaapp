@@ -28,3 +28,22 @@ test('sin conceptos: aviso, no se inventa pago', () => {
   const l = computePeriodLine({ period, payDate: '2026-11-21', days, concepts: [], lateDeductionBps: 2500, extras: [], deductions: [] });
   assert.equal(l.netCents, 0n); assert.ok(l.detail.warnings.length > 0);
 });
+
+test('por día con tarifa de referencia para retardo (Madelin: $300/día, rebaja sobre $65/h) y desglose por día', () => {
+  const c: Concept[] = [
+    { key: 'admin', label: 'Auxiliar administrativo', kind: 'por_dia', amountCents: 30000n, weekdays: [1, 2, 3, 4, 5, 6] },
+    { key: 'ret', label: 'Base retardo', kind: 'tarifa_retardo', amountCents: 6500n, weekdays: [0, 1, 2, 3, 4, 5, 6] }];
+  const d: PeriodDay[] = [
+    { date: '2026-11-16', paidMinutes: 240, attended: true, late: false, scheduled: true },
+    { date: '2026-11-17', paidMinutes: 240, attended: true, late: true, scheduled: true },
+    { date: '2026-11-18', paidMinutes: 0, attended: false, late: false, scheduled: true },
+    { date: '2026-11-19', paidMinutes: 0, attended: false, late: false, scheduled: true, excused: true },
+    { date: '2026-11-22', paidMinutes: 0, attended: false, late: false, scheduled: false }];
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d, concepts: c, lateDeductionBps: 2500, extras: [], deductions: [], loanCents: 50000n });
+  assert.equal(l.grossCents, 60000n);                       // 2 días × $300 (la tarifa de referencia no se paga)
+  assert.deepEqual(l.detail.lateDeduction, { count: 1, perLate: '1625', total: '1625' });   // 65 × 25 % = $16.25
+  assert.equal(l.netCents, 60000n - 1625n - 50000n);
+  assert.equal(l.reportedCents, 60000n - 1625n);            // reportada = neta + préstamos
+  assert.deepEqual(l.detail.days.map(x => x.status), ['', 'Tarde', 'Falta', 'Justificada']);
+  assert.equal(l.detail.faltas, 1);
+});

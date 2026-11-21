@@ -211,10 +211,10 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   );
 }
 
-type Kind = 'por_hora' | 'por_dia' | 'fijo';
+type Kind = 'por_hora' | 'por_dia' | 'fijo' | 'tarifa_retardo';
 interface ConceptRow { id: string; concept_key: string; label: string; kind: Kind; amount_cents: number; weekdays: number[];
   active: boolean; effective_from: string; reason: string; created_at: string }
-const KIND_LABEL: Record<Kind, string> = { por_hora: 'por hora', por_dia: 'por día', fijo: 'fijo por periodo' };
+const KIND_LABEL: Record<Kind, string> = { por_hora: 'por hora', por_dia: 'por día', fijo: 'fijo por periodo', tarifa_retardo: 'por hora, solo como base de la rebaja por retardo (no se paga)' };
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'concepto';
 
@@ -294,11 +294,11 @@ function ConceptForm({ emp, base, onDone, onCancel }: { emp: Emp; base: ConceptR
     <form onSubmit={save} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
       <label className="text-xs">Concepto<input required disabled={!!base} className={field} placeholder="Ej. Portero, Limpieza, Clases" value={label} onChange={e => setLabel(e.target.value)} /></label>
       <label className="text-xs">Tipo<select className={field} value={kind} onChange={e => { const k = e.target.value as Kind; setKind(k); if (k === 'fijo' && !base) setDays([1, 2, 3, 4, 5, 6]); }}>
-        <option value="por_hora">Por hora trabajada</option><option value="por_dia">Por día asistido</option><option value="fijo">Fijo por periodo (semana o quincena)</option></select></label>
-      <label className="text-xs">Importe ($){kind === 'por_hora' ? ' por hora' : kind === 'por_dia' ? ' por día' : ' por periodo'}
+        <option value="por_hora">Por hora trabajada</option><option value="por_dia">Por día asistido</option><option value="fijo">Fijo por periodo (semana o quincena)</option><option value="tarifa_retardo">Tarifa base para rebaja por retardo (no se paga)</option></select></label>
+      <label className="text-xs">Importe ($){kind === 'por_hora' || kind === 'tarifa_retardo' ? ' por hora' : kind === 'por_dia' ? ' por día' : ' por periodo'}
         <input required inputMode="decimal" className={field} value={amount} onChange={e => setAmount(e.target.value)} /></label>
       <label className="text-xs">Vigente desde<input type="date" required className={field} value={from} onChange={e => setFrom(e.target.value)} /></label>
-      {<fieldset className="text-xs sm:col-span-2"><legend>{kind === 'fijo' ? 'Días que cubre (cada falta injustificada en estos días descuenta la parte proporcional)' : 'Días en que aplica'}</legend><div className="mt-1 flex flex-wrap gap-3">
+      {kind !== 'tarifa_retardo' && <fieldset className="text-xs sm:col-span-2"><legend>{kind === 'fijo' ? 'Días que cubre (cada falta injustificada en estos días descuenta la parte proporcional)' : 'Días en que aplica'}</legend><div className="mt-1 flex flex-wrap gap-3">
         {DAYS.map((d, i) => <label key={i} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={days.includes(i)}
           onChange={e => setDays(w => e.target.checked ? [...w, i] : w.filter(x => x !== i))} />{d}</label>)}</div></fieldset>}
       <label className="text-xs sm:col-span-2">Motivo<input required className={field} value={reason} onChange={e => setReason(e.target.value)} /></label>
