@@ -244,3 +244,67 @@ begin
   reset role;
   raise notice 'OK: checadas de dos checadores, resubida, revisiones';
 end $$;
+
+-- 0013: nómina con versiones, restaurar, confirmación y autorización
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        hc_user uuid := (select id from auth.users where email = 'hc@x.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        hc uuid := (select id from public.employees where full_name = 'HC');
+        run uuid; v int; ok boolean; n int; hoy date := app.today_mx();
+        lines1 jsonb; lines2 jsonb;
+begin
+  lines1 := jsonb_build_array(
+    jsonb_build_object('employee_id', c1, 'pay_date', hoy + 3, 'gross_cents', 100000, 'deduction_cents', 2500, 'net_cents', 97500, 'detail', '{}'::jsonb),
+    jsonb_build_object('employee_id', hc, 'pay_date', hoy + 3, 'gross_cents', 200000, 'deduction_cents', 0, 'net_cents', 200000, 'detail', '{}'::jsonb));
+  lines2 := jsonb_set(lines1, '{0,gross_cents}', '90000'); lines2 := jsonb_set(lines2, '{0,net_cents}', '87500');
+
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.payroll_runs (company_id, period_start, period_end, nominal_pay_date) values (car, hoy - 12, hoy + 2, hoy + 3) returning id into run;
+  v := public.save_payroll_version(run, 'Cálculo inicial', lines1, '{}');
+  v := public.save_payroll_version(run, 'Corrección de horas', lines2, '{}');
+  if v <> 2 then raise exception 'versión %', v; end if;
+  v := public.restore_payroll_version(run, 1, '');
+  if v <> 3 or (select net_cents from public.payroll_lines where run_id = run and version = 3 and employee_id = c1) <> 97500 then raise exception 'restaurar'; end if;
+  ok := false; begin perform public.save_payroll_version(run, 'mal', jsonb_set(lines1, '{0,net_cents}', '1'), '{}'); exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó neto inconsistente'; end if;
+  begin update public.payroll_runs set status = 'autorizada' where id = run; exception when others then null; end;
+  if (select status from public.payroll_runs where id = run) <> 'borrador' then raise exception 'cambió estado sin la función'; end if;
+  perform public.set_payroll_status(run, 'publicar');
+  ok := false; begin perform public.set_payroll_status(run, 'autorizar'); exception when others then ok := true; end;
+  if not ok then raise exception 'el admin autorizó su propia versión'; end if;
+  reset role;
+
+  -- El Head Coach (empleado en esta nómina) ve SOLO su línea y confirma.
+  perform set_config('request.jwt.claim.sub', hc_user::text, true);
+  set local role authenticated;
+  select count(*) into n from public.payroll_lines where run_id = run; if n <> 1 then raise exception 'el empleado ve % líneas', n; end if;
+  ok := false; begin insert into public.payroll_confirmations (run_id, version, employee_id, decision) values (run, 2, hc, 'confirmada'); exception when others then ok := true; end;
+  if not ok then raise exception 'confirmó una versión vieja'; end if;
+  ok := false; begin insert into public.payroll_confirmations (run_id, version, employee_id, decision) values (run, 3, c1, 'confirmada'); exception when others then ok := true; end;
+  if not ok then raise exception 'confirmó la nómina de otro'; end if;
+  insert into public.payroll_confirmations (run_id, version, employee_id, decision, comment) values (run, 3, hc, 'observacion', 'Me faltó un día');
+  reset role;
+
+  -- El director autoriza aunque Coach 1 no confirmó; luego nada cambia; reabrir solo director.
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  perform public.set_payroll_status(run, 'autorizar');
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin perform public.save_payroll_version(run, 'tarde', lines1, '{}'); exception when others then ok := true; end;
+  if not ok then raise exception 'modificó una nómina autorizada'; end if;
+  ok := false; begin perform public.set_payroll_status(run, 'reabrir'); exception when others then ok := true; end;
+  if not ok then raise exception 'el admin reabrió'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  perform public.set_payroll_status(run, 'reabrir');
+  if (select status from public.payroll_runs where id = run) <> 'en_revision' then raise exception 'reabrir'; end if;
+  reset role;
+  raise notice 'OK: nómina (versiones, restaurar, publicar, confirmar solo la propia, autorizar por otro, reabrir director)';
+end $$;
