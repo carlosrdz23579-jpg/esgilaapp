@@ -50,9 +50,10 @@ test('llegar antes no suma horas; dentro de tolerancia se paga completo', () => 
   const t = evaluateDay('d', ['16:09', '20:00'], H);
   assert.equal(t.paidMinutes, 240); assert.equal(t.lateMinutes, 0);
 });
-test('retardo después de 10 minutos: se paga desde la llegada real', () => {
+test('retardo después de 10 minutos: se pagan todas las horas (la rebaja del 25 % va aparte)', () => {
   const e = evaluateDay('d', ['16:25', '20:00'], H);
-  assert.deepEqual(e.issues, ['retardo']); assert.equal(e.lateMinutes, 25); assert.equal(e.paidMinutes, 215);
+  assert.deepEqual(e.issues, ['retardo']); assert.equal(e.lateMinutes, 25); assert.equal(e.paidMinutes, 240);
+  assert.deepEqual(evaluateDay('d', ['16:10', '20:00'], H).issues, []);   // justo en la tolerancia
 });
 test('salida temprana', () => {
   const e = evaluateDay('d', ['16:00', '19:08'], H);

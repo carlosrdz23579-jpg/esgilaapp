@@ -126,8 +126,9 @@ const toHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 /**
  * Reglas (confirmadas con ESGILA):
  * - Las horas pagadas son las del horario: llegar antes o salir después no suma.
- * - Tolerancia (10 min por defecto): si entra dentro de ella, se paga completo y no es retardo.
- *   Después de la tolerancia es retardo y se paga desde la hora real de entrada.
+ * - Tolerancia (10 min por defecto): si entra dentro de ella no es retardo.
+ * - Retardo: se pagan TODAS las horas del horario; la sanción es aparte (25 % de una hora,
+ *   en computePayroll). Los minutos tarde solo se informan.
  * - Un bloque de checadas que no toca el horario (p. ej. 06:00–08:00 con horario 16:00–20:00)
  *   no se paga solo: se marca "fuera_de_horario" para que el nominista lo apruebe como clase extra.
  */
@@ -149,11 +150,10 @@ export function evaluateDay(date: string, punches: string[], schedule: Block[], 
     if (touching.length === 0) { ev.issues.push('falta'); continue; }
     const firstIn = Math.min(...touching.map(p => p.s));
     const lastOut = Math.max(...touching.map(p => p.e));
-    const effStart = firstIn <= b.s + toleranceMin ? b.s : firstIn;
     if (firstIn > b.s + toleranceMin) { ev.lateMinutes += firstIn - b.s; if (!ev.issues.includes('retardo')) ev.issues.push('retardo'); }
     if (lastOut < b.e) { ev.earlyLeaveMinutes += b.e - lastOut; if (!ev.issues.includes('salida_temprana')) ev.issues.push('salida_temprana'); }
     for (const p of touching) {
-      const s = p.s === firstIn ? Math.max(effStart, b.s) : Math.max(p.s, b.s), e = Math.min(p.e, b.e);
+      const s = p.s === firstIn ? b.s : Math.max(p.s, b.s), e = Math.min(p.e, b.e);   // llegar tarde no descuenta minutos
       if (e > s) ev.paidMinutes += e - s;
     }
   }

@@ -66,3 +66,89 @@ begin
   reset role;
   raise notice 'OK: reglas de 0007 (editar programado, cancelar, terminar, no borrar)';
 end $$;
+
+-- 0008: Head Coach, dos sucursales, revocar permisos, horarios.
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        coach_car uuid := (select id from public.departments where company_id = car and name = 'Coach');
+        staff_car uuid := (select id from public.departments where company_id = car and name = 'Staff');
+        coach_vin uuid := (select id from public.departments where company_id = vin and name = 'Coach');
+        g1 uuid := (select id from public.groups where department_id = coach_car and name = 'Parkour');
+        g2 uuid := (select id from public.groups where department_id = coach_car and name = 'Telas');
+        hc_user uuid; rrhh_user uuid; hc uuid; c1 uuid; s1 uuid; ok boolean; n int;
+begin
+  insert into auth.users(email) values ('hc@x.com') returning id into hc_user;
+  insert into auth.users(email) values ('rh@x.com') returning id into rrhh_user;
+  update public.app_users set status = 'active' where id = hc_user;
+  update public.app_users set status = 'active', role = 'rrhh' where id = rrhh_user;
+  insert into public.employees (company_id, full_name, department_id, is_head_coach, user_id) values (car, 'HC', coach_car, true, hc_user) returning id into hc;
+  insert into public.employees (company_id, full_name, department_id, group_id) values (car, 'Coach 1', coach_car, g1) returning id into c1;
+  insert into public.employees (company_id, full_name, department_id) values (car, 'Staff 1', staff_car) returning id into s1;
+  -- misma cuenta, segundo expediente en Viñedos
+  insert into public.employees (company_id, full_name, department_id, user_id) values (vin, 'HC en Viñedos', coach_vin, hc_user);
+
+  -- ===== Como Head Coach =====
+  perform set_config('request.jwt.claim.sub', hc_user::text, true);
+  set local role authenticated;
+  update public.employees set group_id = g2, job_title = 'Coach Telas' where id = c1;
+  if (select group_id from public.employees where id = c1) <> g2 then raise exception 'HC no pudo mover de grupo'; end if;
+  ok := false; begin update public.employees set state = 'baja' where id = c1; exception when others then ok := true; end;
+  if not ok then raise exception 'HC pudo dar de baja'; end if;
+  if exists (select 1 from public.employees where id = s1) then raise exception 'HC ve a Staff'; end if;
+  update public.employees set job_title = 'yo' where id = hc;            -- su propio expediente: RLS no lo deja (0 filas)
+  if (select job_title from public.employees where id = hc) is not null then raise exception 'HC se editó a sí mismo'; end if;
+  if app.has_perm('payroll_hours','view', car, coach_car) then raise exception 'HC con horas sin asignar'; end if;
+  ok := false; begin perform app.set_head_coach_responsibility(hc, 'anuncios', true); exception when others then ok := true; end;
+  if not ok then raise exception 'HC se asignó responsabilidades'; end if;
+  reset role;
+
+  -- ===== RR.HH. no puede dar responsabilidades económicas =====
+  perform set_config('request.jwt.claim.sub', rrhh_user::text, true);
+  set local role authenticated;
+  ok := false; begin perform public.set_head_coach_responsibility(hc, 'horas_ver', true); exception when others then ok := true; end;
+  if not ok then raise exception 'RRHH dio una responsabilidad económica'; end if;
+  reset role;
+
+  -- ===== Administrador asigna y revoca =====
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  perform public.set_head_coach_responsibility(hc, 'horas_ver', true);
+  perform public.set_head_coach_responsibility(hc, 'horas_ver', true);    -- idempotente
+  select count(*) into n from public.head_coach_responsibilities(hc) where active; if n <> 1 then raise exception 'responsabilidades activas: %', n; end if;
+  ok := false; begin insert into public.permission_grants (user_id, module, action, source, via_employee) values (hc_user, 'cash', 'view', 'head_coach', hc);
+  exception when others then ok := true; end;
+  if not ok then raise exception 'se pudo insertar un grant de Head Coach a mano'; end if;
+  insert into public.employee_work_schedules (company_id, employee_id, blocks, effective_from, reason)
+    values (car, c1, '[{"weekday":1,"start":"16:00","end":"20:00"}]', current_date, 'horario base');
+  ok := false; begin insert into public.employee_work_schedules (company_id, employee_id, blocks, effective_from, reason)
+    values (car, c1, '[{"weekday":1,"start":"20:00","end":"16:00"}]', current_date, 'malo'); exception when check_violation then ok := true; end;
+  if not ok then raise exception 'aceptó un bloque con fin antes del inicio'; end if;
+  insert into public.checker_ids (company_id, device_id, employee_id, label) values (car, '17', c1, 'jrisy'), (car, '30', c1, 'jrisy');
+  insert into public.checker_ids (company_id, device_id, ignored, label) values (car, '1', true, 'ya no está');
+  reset role;
+
+  -- Head Coach ahora sí tiene horas; al quitarle la marca, las pierde.
+  perform set_config('request.jwt.claim.sub', hc_user::text, true);
+  set local role authenticated;
+  if not app.has_perm('payroll_hours','view', car, coach_car) then raise exception 'HC sin la responsabilidad asignada'; end if;
+  if app.has_perm('payroll_hours','view', car, staff_car) then raise exception 'HC con horas fuera de su departamento'; end if;
+  if not exists (select 1 from public.employee_work_schedules where employee_id = c1) then raise exception 'HC no ve horarios con la responsabilidad'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', '', true);   -- back-office (SQL Editor)
+  update public.employees set is_head_coach = false where id = hc;
+  perform set_config('request.jwt.claim.sub', hc_user::text, true);
+  set local role authenticated;
+  if app.has_perm('payroll_hours','view', car, coach_car) then raise exception 'conservó la responsabilidad sin ser HC'; end if;
+  if exists (select 1 from public.employees where id = c1) then raise exception 'sigue viendo coaches sin ser HC'; end if;
+  reset role;
+
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  update public.employees set is_head_coach = true where id = hc;
+  perform public.set_head_coach_responsibility(hc, 'horas_ver', false);
+  select count(*) into n from public.head_coach_responsibilities(hc) where active; if n <> 0 then raise exception 'no se revocó'; end if;
+  reset role;
+  raise notice 'OK: Head Coach, dos sucursales, revocación, horarios y checador';
+end $$;

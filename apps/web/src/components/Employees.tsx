@@ -105,7 +105,10 @@ export default function Employees() {
 
 function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   { emp: Emp | null; depts: Dept[]; groups: Group[]; onClose: () => void; onSaved: () => void; onChanged: () => void }) {
-  const { companies, companyId, can } = useAuth();
+  const { companies, companyId, can, user } = useAuth();
+  // Quien no tiene permiso de editar expedientes y llega aquí es Head Coach: solo grupo, puesto, contacto y días.
+  const full = !emp || can('employees', 'edit');
+  const lock = !full;
   const initialCompany = emp?.company_id ?? (companyId !== 'all' ? companyId : companies[0]?.id ?? '');
   const [f, setF] = useState({ ...EMPTY, ...(emp ? Object.fromEntries(Object.entries(emp).map(([k, v]) => [k, v ?? ''])) : {}), company_id: initialCompany } as typeof EMPTY);
   const [state, setState] = useState<EState>(emp?.state ?? 'activo');
@@ -126,8 +129,10 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
     const payload = { full_name: f.full_name.trim(), department_id: f.department_id, group_id: nz(f.group_id), job_title: nz(f.job_title),
       hire_date: nz(f.hire_date), phone: nz(f.phone), email: nz(f.email), curp: nz(f.curp?.toUpperCase?.() ?? ''), rfc: nz(f.rfc?.toUpperCase?.() ?? ''),
       birth_date: nz(f.birth_date), address: nz(f.address), contract_type: nz(f.contract_type), is_head_coach: isCoachDept ? head : false, work_days: [...workDays].sort((a, b) => a - b) };
+    const limited = { group_id: payload.group_id, job_title: payload.job_title, phone: payload.phone, email: payload.email,
+      address: payload.address, work_days: payload.work_days };
     const res = emp
-      ? await supabase.from('employees').update(payload).eq('id', emp.id).select('id')
+      ? await supabase.from('employees').update(lock ? limited : payload).eq('id', emp.id).select('id')
       : await supabase.from('employees').insert({ ...payload, company_id: f.company_id }).select('id');
     setBusy(false);
     if (res.error) return setMsg(res.error.message);
@@ -153,20 +158,21 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
           <button onClick={onClose} aria-label="Cerrar" className="text-xl">×</button>
         </div>
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2">
-          <label className="sm:col-span-2 text-xs">Nombre completo<input required className={field} value={f.full_name} onChange={e => set('full_name', e.target.value)} /></label>
+          {lock && <p className="sm:col-span-2 rounded bg-indigo-50 p-2 text-xs text-indigo-800">Como Head Coach puedes cambiar grupo, puesto, teléfono, correo, domicilio y días laborables.</p>}
+          <label className="sm:col-span-2 text-xs">Nombre completo<input required disabled={lock} className={field} value={f.full_name} onChange={e => set('full_name', e.target.value)} /></label>
           <label className="text-xs">Empresa
             <select required disabled={!!emp} className={field} value={f.company_id} onChange={e => { set('company_id', e.target.value); set('department_id', ''); set('group_id', ''); }}>
               <option value="" disabled>Selecciona…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}
             </select></label>
           <label className="text-xs">Departamento
-            <select required className={field} value={f.department_id} onChange={e => { set('department_id', e.target.value); set('group_id', ''); }}>
+            <select required disabled={lock} className={field} value={f.department_id} onChange={e => { set('department_id', e.target.value); set('group_id', ''); }}>
               <option value="" disabled>Selecciona…</option>{myDepts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select></label>
           <label className="text-xs">Grupo
             <select className={field} value={f.group_id} onChange={e => set('group_id', e.target.value)}>
               <option value="">Sin grupo</option>{myGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select></label>
-          {isCoachDept && <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={head} onChange={e => setHead(e.target.checked)} />Es Head Coach</label>}
+          {isCoachDept && full && <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" checked={head} onChange={e => setHead(e.target.checked)} />Es Head Coach</label>}
           <fieldset className="sm:col-span-2 text-xs">
             <legend>Días que trabaja (si el día de pago no es uno de ellos, se le paga su día laborable anterior)</legend>
             <div className="mt-1 flex flex-wrap gap-3">
@@ -176,23 +182,24 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
             </div>
           </fieldset>
           <label className="text-xs">Puesto<input className={field} value={f.job_title} onChange={e => set('job_title', e.target.value)} /></label>
-          <label className="text-xs">Fecha de ingreso<input type="date" className={field} value={f.hire_date} onChange={e => set('hire_date', e.target.value)} /></label>
-          <label className="text-xs">Tipo de contratación<input className={field} value={f.contract_type} onChange={e => set('contract_type', e.target.value)} /></label>
+          <label className="text-xs">Fecha de ingreso<input type="date" disabled={lock} className={field} value={f.hire_date} onChange={e => set('hire_date', e.target.value)} /></label>
+          <label className="text-xs">Tipo de contratación<input disabled={lock} className={field} value={f.contract_type} onChange={e => set('contract_type', e.target.value)} /></label>
           <label className="text-xs">Teléfono<input className={field} value={f.phone} onChange={e => set('phone', e.target.value)} /></label>
           <label className="text-xs">Correo<input type="email" className={field} value={f.email} onChange={e => set('email', e.target.value)} /></label>
-          <label className="text-xs">CURP<input maxLength={18} className={field} value={f.curp} onChange={e => set('curp', e.target.value)} /></label>
-          <label className="text-xs">RFC<input maxLength={13} className={field} value={f.rfc} onChange={e => set('rfc', e.target.value)} /></label>
-          <label className="text-xs">Fecha de nacimiento<input type="date" className={field} value={f.birth_date} onChange={e => set('birth_date', e.target.value)} /></label>
+          <label className="text-xs">CURP<input maxLength={18} disabled={lock} className={field} value={f.curp} onChange={e => set('curp', e.target.value)} /></label>
+          <label className="text-xs">RFC<input maxLength={13} disabled={lock} className={field} value={f.rfc} onChange={e => set('rfc', e.target.value)} /></label>
+          <label className="text-xs">Fecha de nacimiento<input type="date" disabled={lock} className={field} value={f.birth_date} onChange={e => set('birth_date', e.target.value)} /></label>
           <label className="sm:col-span-2 text-xs">Domicilio<input className={field} value={f.address} onChange={e => set('address', e.target.value)} /></label>
           {msg && <p className="sm:col-span-2 rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
           <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
             <button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-60">{emp ? 'Guardar cambios' : 'Crear empleado'}</button>
             {emp && <span className={`rounded-full px-2 py-0.5 text-xs ${badge[state]}`}>{state}</span>}
-            {emp && state === 'activo' && <button type="button" onClick={() => changeState('suspendido')} className="text-sm text-amber-700">Suspender</button>}
-            {emp && state === 'activo' && <button type="button" onClick={() => changeState('baja')} className="text-sm text-red-700">Dar de baja</button>}
-            {emp && state !== 'activo' && <button type="button" onClick={() => changeState('activo')} className="text-sm text-green-700">Reactivar</button>}
+            {emp && full && state === 'activo' && <button type="button" onClick={() => changeState('suspendido')} className="text-sm text-amber-700">Suspender</button>}
+            {emp && full && state === 'activo' && <button type="button" onClick={() => changeState('baja')} className="text-sm text-red-700">Dar de baja</button>}
+            {emp && full && state !== 'activo' && <button type="button" onClick={() => changeState('activo')} className="text-sm text-green-700">Reactivar</button>}
           </div>
         </form>
+        {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
       </div>
     </div>
@@ -240,6 +247,44 @@ function SalaryPanel({ emp }: { emp: Emp }) {
             <td className="py-1">{r.effective_from}</td><td>{formatMXN(r.hourly_rate_cents)}</td>
             <td>{r.previous_rate_cents === null ? '—' : formatMXN(r.previous_rate_cents)}</td><td>{r.created_at.slice(0, 16).replace('T', ' ')}</td></tr>))}</tbody>
         </table>)}
+    </div>
+  );
+}
+
+interface Resp { key: string; label: string; economic: boolean; active: boolean }
+
+function HeadCoachPanel({ emp }: { emp: Emp }) {
+  const { user } = useAuth();
+  const [items, setItems] = useState<Resp[]>([]);
+  const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.rpc('head_coach_responsibilities', { p_employee: emp.id });
+    if (error) setMsg(error.message); else setItems((data as Resp[]) ?? []);
+  }, [emp.id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function toggle(r: Resp) {
+    setBusy(r.key); setMsg(null);
+    const { error } = await supabase.rpc('set_head_coach_responsibility', { p_employee: emp.id, p_key: r.key, p_on: !r.active });
+    setBusy(null);
+    if (error) setMsg(error.message); else load();
+  }
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <h4 className="text-sm font-semibold">Responsabilidades de Head Coach</h4>
+      <p className="text-xs text-slate-500">Siempre puede mover coaches de grupo y editar su información, solo en el departamento Coach de esta sucursal y sin ver salarios. Aquí se agregan tareas extra; cada cambio queda registrado. Necesita tener su cuenta vinculada.</p>
+      <div className="grid gap-1 sm:grid-cols-2">
+        {items.map(r => {
+          const blocked = r.economic && user?.role === 'rrhh';
+          return (
+            <label key={r.key} className={`flex items-center gap-2 text-sm ${blocked ? 'text-slate-400' : ''}`}>
+              <input type="checkbox" checked={r.active} disabled={blocked || busy === r.key} onChange={() => toggle(r)} />
+              {r.label}{r.economic && <span className="text-xs text-slate-400">(solo director o administrador)</span>}
+            </label>);
+        })}
+      </div>
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
     </div>
   );
 }

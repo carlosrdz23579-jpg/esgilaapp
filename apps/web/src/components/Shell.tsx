@@ -8,7 +8,7 @@ const ALWAYS = () => true;
 export const MODULES: Mod[] = [
   { key: 'inicio', label: 'Inicio', icon: '🏠', visible: ALWAYS },
   { key: 'empresas', label: 'Empresas', icon: '🏢', visible: a => a.can('companies') },
-  { key: 'empleados', label: 'Empleados', icon: '👥', visible: a => a.can('employees') },
+  { key: 'empleados', label: 'Empleados', icon: '👥', visible: a => a.can('employees') || a.headCoachOf.length > 0 },
   { key: 'nomina', label: 'Nómina', icon: '🧾', visible: a => a.user?.role === 'empleado' || a.can('payroll') },
   { key: 'reportes', label: 'Reportes', icon: '📊', visible: a => a.can('reports_financial') || a.can('reports_shared') },
   { key: 'efectivo', label: 'Calculadora de efectivo', icon: '💵', visible: a => a.can('cash') },
