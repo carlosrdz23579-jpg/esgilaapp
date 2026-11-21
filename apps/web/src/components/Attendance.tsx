@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { parseCheckerSheet, mergeReports, RAW_SHEET_NAMES, type CheckerReport } from '@domain/checador';
-import { blocksForDate, reviewDay, ISSUE_LABEL, type WeeklyBlock, type DayException, type Review, type ReviewKind, type ReviewedDay } from '@domain/attendance';
+import WorkSchedulePanel from './WorkSchedule';
+import { blocksForDate, reviewDay, suggestWeekly, ISSUE_LABEL, type WeeklyBlock, type DayException, type Review, type ReviewKind, type ReviewedDay } from '@domain/attendance';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
@@ -148,7 +149,7 @@ function Upload({ companies, defaultCompany, onDone }: { companies: { id: string
 }
 
 // ---------------------------------------------------------------------------
-interface EmpDays { emp: EmpLite; hasSchedule: boolean; days: ReviewedDay[] }
+interface EmpDays { emp: EmpLite; hasSchedule: boolean; days: ReviewedDay[]; byDate: Record<string, string[]> }
 
 function Review({ companyId }: { companyId: string }) {
   const { can } = useAuth();
@@ -193,7 +194,7 @@ function Review({ companyId }: { companyId: string }) {
           const blocks = blocksForDate(d, sched?.blocks ?? [], exs);
           days.push(reviewDay(d, byDate[d] ?? [], blocks, tol, revs));
         }
-        return { emp, hasSchedule: scheds.length > 0, days };
+        return { emp, hasSchedule: scheds.length > 0, days, byDate };
       }).filter(x => x.hasSchedule || x.days.some(d => d.punches.length));
       setData(out);
     } catch (e) { setMsg((e as Error).message); }
@@ -216,7 +217,9 @@ function Review({ companyId }: { companyId: string }) {
   }
 
   const canEdit = can('payroll_hours', 'edit');
-  const totals = data.reduce((n, x) => n + x.days.reduce((m, d) => m + d.pending.length, 0), 0);
+  // Sin horario base todo sale como excepción: se cuenta aparte y primero se captura su horario.
+  const totals = data.filter(x => x.hasSchedule).reduce((n, x) => n + x.days.reduce((m, d) => m + d.pending.length, 0), 0);
+  const noSchedule = data.filter(x => !x.hasSchedule).length;
 
   return (
     <div className="space-y-3">
@@ -224,26 +227,33 @@ function Review({ companyId }: { companyId: string }) {
         <label className="text-xs">Desde<input type="date" className={`${field} block`} value={from} onChange={e => setFrom(e.target.value)} /></label>
         <label className="text-xs">Hasta<input type="date" className={`${field} block`} value={to} onChange={e => setTo(e.target.value)} /></label>
         <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />Solo lo pendiente</label>
-        <span className="ml-auto text-sm">{loading ? 'Calculando…' : totals === 0 ? '✅ Sin excepciones pendientes' : <b className="text-amber-700">{totals} excepción(es) pendiente(s)</b>}</span>
+        <span className="ml-auto text-right text-sm">{loading ? 'Calculando…' : <>
+          {totals === 0 ? '✅ Sin excepciones pendientes' : <b className="text-amber-700">{totals} excepción(es) pendiente(s)</b>}
+          {noSchedule > 0 && <span className="block text-xs text-amber-700">{noSchedule} persona(s) sin horario base: captúralo primero (te sugiero uno con sus checadas)</span>}</>}</span>
         {lastImport && <span className="w-full text-xs text-slate-400">Último reporte subido: {lastImport.from_date} al {lastImport.to_date}</span>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      {data.map(({ emp, hasSchedule, days }) => {
+      {[...data].sort((a, b) => Number(a.hasSchedule) - Number(b.hasSchedule)).map(({ emp, hasSchedule, days, byDate }) => {
         const pend = days.filter(d => d.pending.length);
         const paid = days.reduce((n, d) => n + d.paidMinutes, 0);
         const lates = days.filter(d => d.issues.includes('retardo')).length;
         const faltas = days.filter(d => d.issues.includes('falta') && !d.excused).length;
         if (onlyPending && pend.length === 0) return null;
         return (
-          <details key={emp.id} className="rounded-xl bg-white shadow-sm" open={pend.length > 0 && pend.length < 6}>
+          <details key={emp.id} className="rounded-xl bg-white shadow-sm" open={!hasSchedule || (pend.length > 0 && pend.length < 6)}>
             <summary className="flex cursor-pointer flex-wrap items-center gap-3 px-4 py-2 text-sm">
               <b>{emp.full_name}</b><span>{hm(paid)} h pagables</span><span>{lates} retardo(s)</span><span>{faltas} falta(s)</span>
               {!hasSchedule && <span className="rounded-full bg-amber-100 px-2 text-xs text-amber-800">sin horario base</span>}
-              <span className={`ml-auto text-xs ${pend.length ? 'text-amber-700' : 'text-green-700'}`}>{pend.length ? `${pend.length} día(s) por revisar` : 'revisado'}</span>
+              <span className={`ml-auto text-xs ${pend.length ? 'text-amber-700' : 'text-green-700'}`}>{!hasSchedule ? 'captura su horario' : pend.length ? `${pend.length} día(s) por revisar` : 'revisado'}</span>
             </summary>
+            {!hasSchedule && can('payroll_hours', 'edit') && (
+              <div className="px-4 pb-2">
+                <p className="text-xs text-slate-500">Sin horario base el sistema no sabe qué horas pagar, por eso cada día sale como excepción. Al guardarlo, se recalcula solo.</p>
+                <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} suggestion={suggestWeekly(byDate, 1)} onChange={load} defaultFrom={from} />
+              </div>)}
             <table className="w-full text-left text-xs">
               <thead className="text-slate-500"><tr><th className="px-4 py-1">Día</th><th>Checadas</th><th>Pagable</th><th>Situación</th><th /></tr></thead>
-              <tbody>{days.filter(d => !onlyPending || d.pending.length).filter(d => d.punches.length || d.scheduledMinutes || d.issues.length).map(d => (
+              <tbody>{(hasSchedule || !onlyPending ? days : []).filter(d => !onlyPending || d.pending.length).filter(d => d.punches.length || d.scheduledMinutes || d.issues.length).map(d => (
                 <tr key={d.date} className="border-t align-top">
                   <td className="px-4 py-1">{dayLabel(d.date)}</td>
                   <td>{d.punches.join(' ') || '—'}{d.resolvedBy.includes('corregir_checadas') && <span className="text-slate-400"> (corregidas)</span>}</td>

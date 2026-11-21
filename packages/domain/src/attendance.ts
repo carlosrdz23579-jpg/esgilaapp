@@ -69,3 +69,28 @@ export const ISSUE_LABEL: Record<DayIssue, string> = {
   falta: 'Falta', retardo: 'Retardo', salida_temprana: 'Salida temprana', checada_incompleta: 'Checada incompleta',
   fuera_de_horario: 'Trabajo fuera de horario', sin_horario: 'Checó sin tener horario',
 };
+
+/**
+ * Sugiere un horario base a partir de las checadas: por cada día de la semana con al menos
+ * `minDays` días completos (entrada y salida), toma la mediana de entrada y de salida redondeadas
+ * a 30 minutos. Es solo una propuesta: el nominista la revisa antes de guardarla.
+ */
+export function suggestWeekly(punchesByDate: Record<string, readonly string[]>, minDays = 2): WeeklyBlock[] {
+  const toMin = (t: string) => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+  const round30 = (m: number) => Math.round(m / 30) * 30;
+  const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)]; };
+  const byDay: Record<number, { ins: number[]; outs: number[] }> = {};
+  for (const [date, times] of Object.entries(punchesByDate)) {
+    if (times.length < 2) continue;
+    const s = [...times].sort();
+    const w = weekday(date);
+    (byDay[w] ??= { ins: [], outs: [] }).ins.push(toMin(s[0]));
+    byDay[w].outs.push(toMin(s[s.length - 1]));
+  }
+  return Object.entries(byDay)
+    .filter(([, v]) => v.ins.length >= minDays)
+    .map(([w, v]) => ({ weekday: +w, start: fmt(round30(median(v.ins))), end: fmt(round30(median(v.outs))) }))
+    .filter(b => b.end > b.start)
+    .sort((a, b) => a.weekday - b.weekday);
+}

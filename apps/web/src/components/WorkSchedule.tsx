@@ -12,11 +12,12 @@ interface ExRow { id: string; date: string; kind: Kind; blocks: { start: string;
 const today = () => new Date().toLocaleDateString('en-CA');
 
 /** Horario base semanal (solo-agregar: un cambio es una versión nueva) y excepciones de un día. */
-export default function WorkSchedulePanel({ employeeId, companyId }: { employeeId: string; companyId: string }) {
+export default function WorkSchedulePanel({ employeeId, companyId, suggestion, onChange, defaultFrom }:
+  { employeeId: string; companyId: string; suggestion?: WBlock[]; onChange?: () => void; defaultFrom?: string }) {
   const { can } = useAuth();
   const canEdit = can('payroll_hours', 'edit');
   const [rows, setRows] = useState<SchedRow[]>([]); const [ex, setEx] = useState<ExRow[]>([]);
-  const [draft, setDraft] = useState<WBlock[] | null>(null); const [from, setFrom] = useState(today()); const [reason, setReason] = useState('');
+  const [draft, setDraft] = useState<WBlock[] | null>(null); const [from, setFrom] = useState(defaultFrom ?? today()); const [reason, setReason] = useState('');
   const [exOpen, setExOpen] = useState(false);
   const [exF, setExF] = useState({ date: today(), kind: 'clase_extra' as Kind, start: '06:00', end: '08:00', replaces: false, reason: '' });
   const [msg, setMsg] = useState<string | null>(null);
@@ -45,7 +46,7 @@ export default function WorkSchedulePanel({ employeeId, companyId }: { employeeI
     const { error } = await supabase.from('employee_work_schedules').insert({ company_id: companyId, employee_id: employeeId,
       blocks: [...draft].sort((a, b) => a.weekday - b.weekday || a.start.localeCompare(b.start)), effective_from: from, reason: reason.trim() });
     if (error) return setMsg(error.message);
-    setDraft(null); setReason(''); load();
+    setDraft(null); setReason(''); load(); onChange?.();
   }
   async function addException(e: React.FormEvent) {
     e.preventDefault(); setMsg(null);
@@ -54,7 +55,7 @@ export default function WorkSchedulePanel({ employeeId, companyId }: { employeeI
     const { error } = await supabase.from('schedule_exceptions').insert({ company_id: companyId, employee_id: employeeId, date: exF.date,
       kind: exF.kind, blocks, replaces_base: exF.kind === 'sin_actividad' ? false : exF.replaces, reason: exF.reason.trim() || KINDS[exF.kind] });
     if (error) return setMsg(error.message);
-    setExOpen(false); load();
+    setExOpen(false); load(); onChange?.();
   }
   async function cancelException(x: ExRow) {
     if (!window.confirm(`¿Cancelar "${KINDS[x.kind]}" del ${x.date}?`)) return;
@@ -72,6 +73,11 @@ export default function WorkSchedulePanel({ employeeId, companyId }: { employeeI
         {canEdit && !draft && <button className="ml-auto text-sm text-brand" onClick={() => setDraft(current?.blocks ?? [])}>{current ? 'Cambiar horario' : '+ Capturar horario'}</button>}</div>
       <p className="text-sm">{current ? <>{fmt(current.blocks)} <span className="text-xs text-slate-400">· desde {current.effective_from}</span></> : <span className="text-slate-500">Sin horario base: sin él no se pueden detectar retardos ni faltas.</span>}</p>
       {upcoming.map(u => <p key={u.id} className="text-xs text-slate-500">Programado desde {u.effective_from}: {fmt(u.blocks)}</p>)}
+      {canEdit && !draft && !current && suggestion && suggestion.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-indigo-50 p-2 text-sm text-indigo-900">
+          <span>Sugerido según sus checadas: <b>{fmt(suggestion)}</b></span>
+          <button className="ml-auto rounded-lg border border-indigo-400 px-3 py-1 text-xs" onClick={() => { setDraft(suggestion); setReason('Horario tomado de sus checadas'); }}>Usar y revisar</button>
+        </div>)}
 
       {draft && (
         <div className="space-y-2 rounded-lg border p-3">

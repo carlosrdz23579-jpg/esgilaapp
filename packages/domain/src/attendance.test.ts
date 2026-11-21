@@ -37,3 +37,16 @@ test('sin revisión, las excepciones quedan pendientes', () => {
   const d = reviewDay(LUN, ['16:30', '19:00'], blocksForDate(LUN, W, []), 15, []);
   assert.deepEqual(d.pending.sort(), ['retardo', 'salida_temprana']);
 });
+
+import { suggestWeekly } from './attendance.ts';
+test('sugerir horario desde checadas (caso Sayana: lun–jue ~16:00–20:00)', () => {
+  const p = {
+    '2026-09-29': ['16:00', '20:00'], '2026-09-30': ['15:55', '20:01'], '2026-10-02': ['15:56'],
+    '2026-10-05': ['15:58'], '2026-10-06': ['15:58', '20:00'], '2026-10-07': ['15:54', '20:01'],
+    '2026-10-08': ['16:01', '20:02'], '2026-10-12': ['15:51', '19:58'], '2026-10-13': ['15:55', '20:00'], '2026-10-14': ['16:01'],
+    '2026-10-01': ['16:03', '20:05'],
+  };
+  assert.deepEqual(suggestWeekly(p), [
+    { weekday: 2, start: '16:00', end: '20:00' }, { weekday: 3, start: '16:00', end: '20:00' }, { weekday: 4, start: '16:00', end: '20:00' }]);
+  assert.deepEqual(suggestWeekly(p, 1).map(b => b.weekday), [1, 2, 3, 4]);
+});
