@@ -222,7 +222,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
 
 type Kind = 'por_hora' | 'por_dia' | 'fijo' | 'tarifa_retardo';
 interface ConceptRow { id: string; concept_key: string; label: string; kind: Kind; amount_cents: number; weekdays: number[];
-  active: boolean; effective_from: string; reason: string; created_at: string }
+  active: boolean; effective_from: string; reason: string; created_at: string; annulled_at: string | null; annul_reason: string | null }
 const KIND_LABEL: Record<Kind, string> = { por_hora: 'por hora', por_dia: 'por día', fijo: 'fijo por periodo', tarifa_retardo: 'por hora, solo como base de la rebaja por retardo (no se paga)' };
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'concepto';
@@ -235,17 +235,27 @@ function SalaryPanel({ emp }: { emp: Emp }) {
   const [edit, setEdit] = useState<ConceptRow | 'new' | null>(null);
   const load = useCallback(async () => {
     const { data, error } = await supabase.from('compensation_concepts')
-      .select('id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,reason,created_at')
+      .select('id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,reason,created_at,annulled_at,annul_reason')
       .eq('employee_id', emp.id).order('effective_from', { ascending: false }).order('created_at', { ascending: false });
     if (error) setMsg(error.message); else setRows((data as ConceptRow[]) ?? []);
   }, [emp.id]);
   useEffect(() => { load(); }, [load]);
 
   const today = new Date().toLocaleDateString('en-CA');
-  const current = Object.values(rows.filter(r => r.effective_from <= today)
+  const valid = rows.filter(r => !r.annulled_at);
+  const current = Object.values(valid.filter(r => r.effective_from <= today)
     .reduce<Record<string, ConceptRow>>((m, r) => (m[r.concept_key] ? m : { ...m, [r.concept_key]: r }), {})).filter(r => r.active);
-  const scheduled = rows.filter(r => r.effective_from > today);
+  const scheduled = valid.filter(r => r.effective_from > today);
 
+  async function annul(r: ConceptRow) {
+    const reason = window.prompt(`Anular "${r.label} ${formatMXN(r.amount_cents)}${r.active ? '' : ' (terminado)'}" vigente desde ${r.effective_from}.\n\nDeja de contar para el pago y para nóminas nuevas; queda registrado como anulado (las nóminas ya autorizadas no cambian).\n\nMotivo:`);
+    if (reason === null) return;
+    if (!reason.trim()) return setMsg('El motivo es obligatorio.');
+    const { data, error } = await supabase.from('compensation_concepts').update({ annulled_at: new Date().toISOString(), annul_reason: reason.trim() }).eq('id', r.id).select('id');
+    if (error) return setMsg(error.message);
+    if (!data?.length) return setMsg('No se aplicó: necesitas permiso de editar salarios.');
+    setMsg(null); load();
+  }
   async function end(r: ConceptRow) {
     const from = window.prompt(`Terminar "${r.label}". ¿Desde qué fecha deja de pagarse? (AAAA-MM-DD)`, today);
     if (!from) return;
@@ -253,7 +263,7 @@ function SalaryPanel({ emp }: { emp: Emp }) {
     const { error } = await supabase.from('compensation_concepts').insert({ company_id: emp.company_id, employee_id: emp.id,
       concept_key: r.concept_key, label: r.label, kind: r.kind, amount_cents: r.amount_cents, weekdays: r.weekdays,
       active: false, effective_from: from, reason: reason.trim() });
-    if (error) setMsg(error.message.includes('duplicate') ? 'Ya hay un cambio de este concepto con esa fecha.' : error.message); else load();
+    if (error) setMsg(error.message.includes('duplicate') ? 'Ya hay un cambio de este concepto con esa fecha. Si está mal, anúlalo en el historial y vuelve a capturar.' : error.message); else load();
   }
 
   return (
@@ -274,9 +284,14 @@ function SalaryPanel({ emp }: { emp: Emp }) {
       {edit && <ConceptForm emp={emp} base={edit === 'new' ? null : edit} onDone={() => { setEdit(null); load(); }} onCancel={() => setEdit(null)} />}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       {rows.length > 0 && <details className="text-xs"><summary className="cursor-pointer text-slate-500">Historial completo</summary>
-        <table className="mt-1 w-full text-left"><thead className="text-slate-500"><tr><th>Vigente desde</th><th>Concepto</th><th>Importe</th><th>Motivo</th><th>Registrado</th></tr></thead>
-          <tbody>{rows.map(r => <tr key={r.id} className="border-t"><td className="py-1">{r.effective_from}</td><td>{r.label}{!r.active && ' (terminado)'}</td>
-            <td>{formatMXN(r.amount_cents)} {KIND_LABEL[r.kind]}</td><td>{r.reason}</td><td>{r.created_at.slice(0, 16).replace('T', ' ')}</td></tr>)}</tbody></table></details>}
+        <table className="mt-1 w-full text-left"><thead className="text-slate-500"><tr><th>Vigente desde</th><th>Concepto</th><th>Importe</th><th>Motivo</th><th>Registrado</th><th /></tr></thead>
+          <tbody>{rows.map(r => <tr key={r.id} className={`border-t ${r.annulled_at ? 'text-slate-400' : ''}`}>
+            <td className={`py-1 ${r.annulled_at ? 'line-through' : ''}`}>{r.effective_from}</td>
+            <td className={r.annulled_at ? 'line-through' : ''}>{r.label}{!r.active && ' (terminado)'}</td>
+            <td className={r.annulled_at ? 'line-through' : ''}>{formatMXN(r.amount_cents)} {KIND_LABEL[r.kind]}</td>
+            <td>{r.reason}{r.annulled_at && <span className="block text-red-700">Anulado {r.annulled_at.slice(0, 16).replace('T', ' ')}: {r.annul_reason}</span>}</td>
+            <td>{r.created_at.slice(0, 16).replace('T', ' ')}</td>
+            <td className="text-right">{!r.annulled_at && can('salary', 'edit') && <button className="text-red-700" onClick={() => annul(r)}>Anular</button>}</td></tr>)}</tbody></table></details>}
     </div>
   );
 }
@@ -296,7 +311,7 @@ function ConceptForm({ emp, base, onDone, onCancel }: { emp: Emp; base: ConceptR
     const { error } = await supabase.from('compensation_concepts').insert({ company_id: emp.company_id, employee_id: emp.id,
       concept_key: base?.concept_key ?? slug(label), label: label.trim(), kind, amount_cents: cents,
       weekdays: [...days].sort((a, b) => a - b), effective_from: from, reason: reason.trim() });
-    if (error) return setMsg(error.message.includes('duplicate') ? 'Ya existe un concepto con ese nombre y fecha. Usa otro nombre o fecha.' : error.message);
+    if (error) return setMsg(error.message.includes('duplicate') ? 'Ya existe un cambio de este concepto con esa fecha. Si está mal, anúlalo en el historial y vuelve a capturar.' : error.message);
     onDone();
   }
   return (

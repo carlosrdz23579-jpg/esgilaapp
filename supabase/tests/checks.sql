@@ -416,3 +416,27 @@ begin
   reset role;
   raise notice 'OK: calentamiento (solo coaches)';
 end $$;
+
+-- 0021: anular historial de pago
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        x uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.compensation_concepts (company_id, employee_id, concept_key, label, kind, amount_cents, effective_from, reason)
+    values (car, c1, 'clases', 'Clases', 'por_hora', 8000, '2026-11-23', 'error') returning id into x;
+  ok := false; begin update public.compensation_concepts set amount_cents = 9000 where id = x; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó el importe'; end if;
+  ok := false; begin update public.compensation_concepts set annulled_at = now() where id = x; exception when others then ok := true; end;
+  if not ok then raise exception 'anuló sin motivo'; end if;
+  update public.compensation_concepts set annulled_at = now(), annul_reason = 'capturé mal el importe' where id = x;
+  insert into public.compensation_concepts (company_id, employee_id, concept_key, label, kind, amount_cents, effective_from, reason)
+    values (car, c1, 'clases', 'Clases', 'por_hora', 9000, '2026-11-23', 'corrección');   -- misma fecha: ya se permite
+  if (select amount_cents from app.concepts_at(c1, '2026-11-30') where concept_key = 'clases') <> 9000 then raise exception 'vigente tras anular'; end if;
+  if (select annulled_by from public.compensation_concepts where id = x) <> admin then raise exception 'no registró quién anuló'; end if;
+  reset role;
+  raise notice 'OK: anular historial de pago';
+end $$;

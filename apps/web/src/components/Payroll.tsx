@@ -126,7 +126,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
       const [att, cc, xe, dd, ln, wu] = await Promise.all([
         loadAttendance(companyId, period.emps.map(x => x.emp), period.start, period.end),
         supabase.from('compensation_concepts').select('employee_id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,created_at')
-          .in('employee_id', ids).lte('effective_from', period.end).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
+          .in('employee_id', ids).is('annulled_at', null).lte('effective_from', period.end).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
         supabase.from('extra_earnings').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
         supabase.from('deductions').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
         supabase.from('loans').select('id,employee_id,lender,principal_cents,interest_cents,installment_cents,start_date,status').in('employee_id', ids).eq('status', 'activo'),

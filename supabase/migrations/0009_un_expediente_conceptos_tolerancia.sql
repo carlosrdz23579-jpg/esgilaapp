@@ -74,7 +74,8 @@ insert into public.compensation_concepts (company_id, employee_id, concept_key, 
 select h.company_id, h.employee_id, 'hora', 'Pago por hora', 'por_hora', h.hourly_rate_cents, h.effective_from,
        'Migrado del historial de pago por hora', h.created_by, h.created_at
 from public.employee_compensation_history h
-on conflict (employee_id, concept_key, effective_from) do nothing;
+where not exists (select 1 from public.compensation_concepts c
+                  where c.employee_id = h.employee_id and c.concept_key = 'hora' and c.effective_from = h.effective_from);
 
 drop trigger if exists trg_cc_immutable on public.compensation_concepts;
 create trigger trg_cc_immutable before update or delete on public.compensation_concepts

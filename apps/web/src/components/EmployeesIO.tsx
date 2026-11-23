@@ -129,7 +129,7 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
       let line = `${ex ? `↻ Actualizado (${mode === 'conservar' ? 'solo campos vacíos' : 'reemplazando'})` : '+ Creado'}: ${ex?.full_name ?? g.fullName}${ex && normName(ex.full_name) !== normName(g.fullName) ? ` ← "${g.fullName}"` : ''}`;
       // Pago por hora (solo contrato "Por horas") con su historial: anterior desde el ingreso, actual desde el último aumento.
       if (canPay && p.c?.importPay && p.c.hourlyCents) {
-        const exc = await supabase.from('compensation_concepts').select('effective_from').eq('employee_id', id).eq('concept_key', 'hora');
+        const exc = await supabase.from('compensation_concepts').select('effective_from').eq('employee_id', id).eq('concept_key', 'hora').is('annulled_at', null);
         const have = new Set(((exc.data ?? []) as { effective_from: string }[]).map(x => x.effective_from));
         const rows = [];
         if (mode === 'conservar' && have.size > 0) { out.push(`${line} · pago: se conserva el que ya capturaste`); continue; }
@@ -224,7 +224,7 @@ export async function exportEmployees(companyId: string, canSalary: boolean, can
   if (canSalary) {
     const ids = emps.map(x => x.id);
     const [cc, ws] = await Promise.all([
-      supabase.from('compensation_concepts').select('employee_id,concept_key,kind,amount_cents,active,effective_from,reason,created_at').in('employee_id', ids)
+      supabase.from('compensation_concepts').select('employee_id,concept_key,kind,amount_cents,active,effective_from,reason,created_at').in('employee_id', ids).is('annulled_at', null)
         .lte('effective_from', t).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
       canHours ? supabase.from('employee_work_schedules').select('employee_id,blocks,effective_from,created_at').in('employee_id', ids).lte('effective_from', t)
         .order('effective_from', { ascending: false }).order('created_at', { ascending: false }) : Promise.resolve({ data: [], error: null }),
