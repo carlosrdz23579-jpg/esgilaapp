@@ -48,3 +48,19 @@ test('por día con tarifa de referencia para retardo (Madelin: $300/día, rebaja
   assert.deepEqual(l.detail.days.map(x => x.status), ['', 'Tarde', 'Falta', 'Justificada']);
   assert.equal(l.detail.faltas, 1);
 });
+
+import { recomputeLine } from './period-payroll.ts';
+test('calentamiento: día sin calentamiento activo descuenta 15 min de su tarifa', () => {
+  const d2: PeriodDay[] = days.map((x, i) => ({ ...x, late: false, scheduled: true, warmupInactive: i === 0 }));
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [] });
+  assert.deepEqual(l.detail.warmup, { days: 1, perDay: '2500', total: '2500' });   // $100/h → 15 min = $25
+  assert.equal(l.netCents, 240000n - 2500n);
+});
+test('editar a mano: cambiar horas de un día y agregar un ajuste recalcula igual', () => {
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: days.map(x => ({ ...x, scheduled: true })), concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [] });
+  const edited = l.detail.days.map((d, i) => i === 0 ? { ...d, minutes: 180, status: '' as const } : d);
+  const r = recomputeLine(l.detail, period, '2026-11-21', edited, [{ label: 'Bono puntualidad', amountCents: 10000n }, { label: 'Ajuste', amountCents: -5000n }]);
+  assert.equal(r.grossCents, 230000n + 10000n);                // un día de 4 h pasó a 3 h; + bono
+  assert.equal(r.deductionCents, 5000n + 5000n);              // 2 retardos (se quitó uno) + ajuste
+  assert.equal(r.netCents, r.grossCents - r.deductionCents);
+});

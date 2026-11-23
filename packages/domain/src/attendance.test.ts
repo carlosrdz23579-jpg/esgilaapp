@@ -50,3 +50,8 @@ test('sugerir horario desde checadas (caso Sayana: lun–jue ~16:00–20:00)', (
     { weekday: 2, start: '16:00', end: '20:00' }, { weekday: 3, start: '16:00', end: '20:00' }, { weekday: 4, start: '16:00', end: '20:00' }]);
   assert.deepEqual(suggestWeekly(p, 1).map(b => b.weekday), [1, 2, 3, 4]);
 });
+
+test('clase extra aprobada se redondea a la media hora más cercana (06:04–07:58 = 2:00)', () => {
+  const d = reviewDay(LUN, ['06:04', '07:58', '16:00', '20:00'], blocksForDate(LUN, W, []), 15, [{ date: LUN, kind: 'aprobar_extra', reason: 'clase' }]);
+  assert.equal(d.approvedExtraMinutes, 120); assert.equal(d.paidMinutes, 360);
+});

@@ -57,9 +57,18 @@ test('retardo después de 15 minutos: se pagan todas las horas (la rebaja del 25
   assert.deepEqual(evaluateDay('d', ['16:16', '20:00'], H).issues, ['retardo']);
   assert.deepEqual(evaluateDay('d', ['16:12', '20:00'], H, 10).issues, ['retardo']);   // otra tolerancia por empresa
 });
-test('salida temprana', () => {
+test('salida temprana más allá de la tolerancia: a revisión y se paga hasta la media hora anterior', () => {
   const e = evaluateDay('d', ['16:00', '19:08'], H);
-  assert.deepEqual(e.issues, ['salida_temprana']); assert.equal(e.paidMinutes, 188); assert.equal(e.earlyLeaveMinutes, 52);
+  assert.deepEqual(e.issues, ['salida_temprana']); assert.equal(e.paidMinutes, 180); assert.equal(e.earlyLeaveMinutes, 52);
+  assert.equal(evaluateDay('d', ['16:00', '19:30'], H).paidMinutes, 210);     // salió 19:30 con salida a las 20:00 → 3:30 y a revisión
+});
+test('salida dentro de la tolerancia: se paga completo y se anota', () => {
+  const e = evaluateDay('d', ['16:00', '19:45'], H);
+  assert.deepEqual(e.issues, []); assert.equal(e.paidMinutes, 240); assert.match(e.notes[0], /19:45 ajustada a 20:00/);
+  assert.equal(evaluateDay('d', ['16:00', '19:57'], H).paidMinutes, 240);      // caso Itzel 11/11
+});
+test('salir después de su hora no suma (19:00 → checó 19:20)', () => {
+  assert.equal(evaluateDay('d', ['16:00', '19:20'], [{ start: '16:00', end: '19:00' }]).paidMinutes, 180);
 });
 test('clase extra en la mañana: no se paga sola, queda para aprobar', () => {
   const e = evaluateDay('d', ['06:07', '07:58', '16:04', '20:05'], H);

@@ -5,18 +5,21 @@ import { parseCheckerSheet, mergeReports, RAW_SHEET_NAMES, type CheckerReport } 
 import WorkSchedulePanel from './WorkSchedule';
 import { suggestWeekly, ISSUE_LABEL, type ReviewKind, type ReviewedDay } from '@domain/attendance';
 import { loadAttendance, addDays, type EmpLite, type EmpAttendance } from '../lib/attendanceData';
+import { usePersisted } from '../lib/usePersisted';
+import { Modal, TimeSelect } from './ui';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
 const WD = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 const dayLabel = (iso: string) => `${WD[new Date(iso + 'T12:00:00Z').getUTCDay()]} ${+iso.slice(8)}/${+iso.slice(5, 7)}`;
 const hm = (m: number) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+type EmpDays = EmpAttendance;
 
 interface Mapping { device_id: string; employee_id: string | null; ignored: boolean; label: string | null }
 
 export default function Attendance() {
   const { companies, companyId } = useAuth();
-  const [tab, setTab] = useState<'subir' | 'revisar'>('subir');
+  const [tab, setTab] = usePersisted<'subir' | 'revisar'>('asistencia:tab', 'subir');
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -146,19 +149,24 @@ function Upload({ companies, defaultCompany, onDone }: { companies: { id: string
 }
 
 // ---------------------------------------------------------------------------
-type EmpDays = EmpAttendance;
 
 function Review({ companyId }: { companyId: string }) {
   const { can } = useAuth();
   const t = new Date().toLocaleDateString('en-CA');
-  const [from, setFrom] = useState(addDays(t, -15)); const [to, setTo] = useState(addDays(t, -1));
+  // Se recuerda todo: al volver, quedas donde estabas (fechas, filtro y la persona abierta).
+  const [range, setRange] = usePersisted<{ from: string; to: string } | null>(`asistencia:rango:${companyId}`, null);
+  const from = range?.from ?? addDays(t, -15), to = range?.to ?? addDays(t, -1);
+  const setFrom = (v: string) => setRange({ from: v, to }); const setTo = (v: string) => setRange({ from, to: v });
+  const [onlyPending, setOnlyPending] = usePersisted('asistencia:soloPendiente', true);
+  const [openId, setOpenId] = usePersisted<string | null>(`asistencia:abierto:${companyId}`, null);
   const [data, setData] = useState<EmpDays[]>([]); const [loading, setLoading] = useState(false);
-  const [onlyPending, setOnlyPending] = useState(true); const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
   const [lastImport, setLastImport] = useState<{ from_date: string; to_date: string } | null>(null);
 
   useEffect(() => {
     supabase.from('checker_imports').select('from_date,to_date').order('created_at', { ascending: false }).limit(1)
-      .then(({ data }) => { const r = data?.[0]; if (r) { setLastImport(r); setFrom(r.from_date); setTo(r.to_date); } });
+      .then(({ data }) => { const r = data?.[0]; if (r) { setLastImport(r); if (!range) setRange({ from: r.from_date, to: r.to_date }); } });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId]);
 
   const load = useCallback(async () => {
@@ -174,77 +182,141 @@ function Review({ companyId }: { companyId: string }) {
   }, [companyId, from, to]);
   useEffect(() => { load(); }, [load]);
 
-  async function act(emp: EmpLite, d: ReviewedDay, kind: ReviewKind) {
-    let times: string[] | undefined;
-    if (kind === 'corregir_checadas') {
-      const v = window.prompt(`Checadas correctas del ${dayLabel(d.date)} para ${emp.full_name}, separadas por espacio (ej. 16:00 20:00):`, d.punches.join(' '));
-      if (v === null) return;
-      times = v.trim().split(/[\s,]+/).filter(Boolean);
-      if (times.some(x => !/^([01]\d|2[0-3]):[0-5]\d$/.test(x))) return setMsg('Usa el formato HH:MM, por ejemplo 07:05 16:00.');
-    }
-    const reason = window.prompt('Motivo (queda registrado):', kind === 'justificar_falta' ? 'Permiso' : kind === 'aprobar_extra' ? 'Clase extra' : '');
-    if (!reason?.trim()) return;
-    const { error } = await supabase.from('attendance_reviews').insert({ company_id: emp.company_id, employee_id: emp.id, date: d.date, kind, times: times ?? null, reason: reason.trim() });
-    if (error) setMsg(error.message); else load();
-  }
-
-  const canEdit = can('payroll_hours', 'edit');
-  // Sin horario base todo sale como excepción: se cuenta aparte y primero se captura su horario.
   const totals = data.filter(x => x.hasSchedule).reduce((n, x) => n + x.days.reduce((m, d) => m + d.pending.length, 0), 0);
   const noSchedule = data.filter(x => !x.hasSchedule).length;
+  const current = data.find(x => x.emp.id === openId) ?? null;
+  const visible = [...data].sort((a, b) => Number(a.hasSchedule) - Number(b.hasSchedule) || a.emp.full_name.localeCompare(b.emp.full_name))
+    .filter(x => !onlyPending || !x.hasSchedule || x.days.some(d => d.pending.length));
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Desde<input type="date" className={`${field} block`} value={from} onChange={e => setFrom(e.target.value)} /></label>
         <label className="text-xs">Hasta<input type="date" className={`${field} block`} value={to} onChange={e => setTo(e.target.value)} /></label>
-        <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />Solo lo pendiente</label>
+        <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={onlyPending} onChange={e => setOnlyPending(e.target.checked)} />Solo con pendientes</label>
         <span className="ml-auto text-right text-sm">{loading ? 'Calculando…' : <>
           {totals === 0 ? '✅ Sin excepciones pendientes' : <b className="text-amber-700">{totals} excepción(es) pendiente(s)</b>}
-          {noSchedule > 0 && <span className="block text-xs text-amber-700">{noSchedule} persona(s) sin horario base: captúralo primero (te sugiero uno con sus checadas)</span>}</>}</span>
+          {noSchedule > 0 && <span className="block text-xs text-amber-700">{noSchedule} persona(s) sin horario base</span>}</>}</span>
         {lastImport && <span className="w-full text-xs text-slate-400">Último reporte subido: {lastImport.from_date} al {lastImport.to_date}</span>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      {[...data].sort((a, b) => Number(a.hasSchedule) - Number(b.hasSchedule)).map(({ emp, hasSchedule, days, byDate }) => {
-        const pend = days.filter(d => d.pending.length);
-        const paid = days.reduce((n, d) => n + d.paidMinutes, 0);
-        const lates = days.filter(d => d.issues.includes('retardo')).length;
-        const faltas = days.filter(d => d.issues.includes('falta') && !d.excused).length;
-        if (onlyPending && pend.length === 0) return null;
-        return (
-          <details key={emp.id} className="rounded-xl bg-white shadow-sm" open={!hasSchedule || (pend.length > 0 && pend.length < 6)}>
-            <summary className="flex cursor-pointer flex-wrap items-center gap-3 px-4 py-2 text-sm">
-              <b>{emp.full_name}</b><span>{hm(paid)} h pagables</span><span>{lates} retardo(s)</span><span>{faltas} falta(s)</span>
-              {!hasSchedule && <span className="rounded-full bg-amber-100 px-2 text-xs text-amber-800">sin horario base</span>}
-              <span className={`ml-auto text-xs ${pend.length ? 'text-amber-700' : 'text-green-700'}`}>{!hasSchedule ? 'captura su horario' : pend.length ? `${pend.length} día(s) por revisar` : 'revisado'}</span>
-            </summary>
-            {!hasSchedule && can('payroll_hours', 'edit') && (
-              <div className="px-4 pb-2">
-                <p className="text-xs text-slate-500">Sin horario base el sistema no sabe qué horas pagar, por eso cada día sale como excepción. Al guardarlo, se recalcula solo.</p>
-                <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} suggestion={suggestWeekly(byDate, 1)} onChange={load} defaultFrom={from} />
-              </div>)}
-            <table className="w-full text-left text-xs">
-              <thead className="text-slate-500"><tr><th className="px-4 py-1">Día</th><th>Checadas</th><th>Pagable</th><th>Situación</th><th /></tr></thead>
-              <tbody>{(hasSchedule || !onlyPending ? days : []).filter(d => !onlyPending || d.pending.length).filter(d => d.punches.length || d.scheduledMinutes || d.issues.length).map(d => (
-                <tr key={d.date} className="border-t align-top">
-                  <td className="px-4 py-1">{dayLabel(d.date)}</td>
-                  <td>{d.punches.join(' ') || '—'}{d.resolvedBy.includes('corregir_checadas') && <span className="text-slate-400"> (corregidas)</span>}</td>
-                  <td>{hm(d.paidMinutes)}{d.approvedExtraMinutes > 0 && <span className="text-green-700"> (+{hm(d.approvedExtraMinutes)} extra)</span>}</td>
-                  <td>{d.issues.length === 0 ? <span className="text-green-700">OK</span> : d.issues.map(i => (
-                    <span key={i} className={`mr-1 rounded px-1 ${d.pending.includes(i) ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500 line-through'}`}>
-                      {ISSUE_LABEL[i]}{i === 'retardo' ? ` ${d.lateMinutes} min` : ''}{i === 'fuera_de_horario' ? ` ${d.outsideBlocks.map(b => `${b.start}–${b.end}`).join(', ')}` : ''}</span>))}
-                    {d.excused && <span className="text-slate-500">justificada</span>}</td>
-                  <td className="space-x-2 whitespace-nowrap pr-3 text-right">{canEdit && d.pending.length > 0 && <>
-                    {(d.pending.includes('fuera_de_horario') || d.pending.includes('sin_horario')) && <button className="text-green-700" onClick={() => act(emp, d, 'aprobar_extra')}>Pagar extra</button>}
-                    {d.pending.includes('falta') && <button className="text-brand" onClick={() => act(emp, d, 'justificar_falta')}>Justificar</button>}
-                    {d.pending.includes('retardo') && <button className="text-brand" onClick={() => act(emp, d, 'quitar_retardo')}>Quitar retardo</button>}
-                    <button className="text-brand" onClick={() => act(emp, d, 'corregir_checadas')}>Corregir</button>
-                    <button className="text-slate-600" onClick={() => act(emp, d, 'aceptar')}>Dejar así</button></>}</td>
-                </tr>))}</tbody>
-            </table>
-          </details>);
-      })}
-      {!loading && data.length === 0 && <p className="text-sm text-slate-500">No hay personal con horario o checadas en estas fechas.</p>}
+      <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Empleado</th><th className="px-3 py-2">Horas pagables</th>
+            <th className="px-3 py-2">Retardos</th><th className="px-3 py-2">Faltas</th><th className="px-3 py-2">Pendiente</th></tr></thead>
+          <tbody>{visible.map(({ emp, hasSchedule, days }) => {
+            const pend = days.filter(d => d.pending.length).length;
+            return (
+              <tr key={emp.id} className={`cursor-pointer border-t hover:bg-slate-50 ${openId === emp.id ? 'bg-brand/5' : ''}`} onClick={() => setOpenId(emp.id)}>
+                <td className="px-3 py-2 font-medium text-brand">{emp.full_name}</td>
+                <td className="px-3 py-2">{hm(days.reduce((n, d) => n + d.paidMinutes, 0))}</td>
+                <td className="px-3 py-2">{days.filter(d => d.issues.includes('retardo')).length}</td>
+                <td className="px-3 py-2">{days.filter(d => d.issues.includes('falta') && !d.excused).length}</td>
+                <td className="px-3 py-2 text-xs">{!hasSchedule ? <span className="rounded-full bg-amber-100 px-2 text-amber-800">sin horario base</span>
+                  : pend ? <span className="text-amber-700">{pend} día(s) por revisar</span> : <span className="text-green-700">revisado</span>}</td>
+              </tr>);
+          })}</tbody>
+        </table>
+        {!loading && visible.length === 0 && <p className="p-4 text-sm text-slate-500">{data.length ? 'Nada pendiente en estas fechas.' : 'No hay personal con horario o checadas en estas fechas.'}</p>}
+      </div>
+      {current && <EmployeeReview x={current} from={from} canEdit={can('payroll_hours', 'edit')} onClose={() => setOpenId(null)} onChanged={load} />}
     </div>
+  );
+}
+
+/** Ventana con los días de una persona y las acciones de revisión. */
+function EmployeeReview({ x, from, canEdit, onClose, onChanged }: { x: EmpDays; from: string; canEdit: boolean; onClose: () => void; onChanged: () => void }) {
+  const { emp, hasSchedule, days, byDate } = x;
+  const [all, setAll] = usePersisted('asistencia:todosLosDias', false);
+  const [fix, setFix] = useState<ReviewedDay | null>(null);
+  const [ask, setAsk] = useState<{ d: ReviewedDay; kind: ReviewKind } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const shown = days.filter(d => d.punches.length || d.scheduledMinutes || d.issues.length).filter(d => all || d.pending.length || d.notes.length);
+
+  async function save(d: ReviewedDay, kind: ReviewKind, reason: string, times?: string[]) {
+    setMsg(null);
+    const { error } = await supabase.from('attendance_reviews').insert({ company_id: emp.company_id, employee_id: emp.id, date: d.date, kind, times: times ?? null, reason });
+    if (error) setMsg(error.message); else { setFix(null); setAsk(null); onChanged(); }
+  }
+
+  return (
+    <Modal wide onClose={onClose} title={<>{emp.full_name} <span className="text-sm font-normal text-slate-500">· {hm(days.reduce((n, d) => n + d.paidMinutes, 0))} h pagables</span></>}>
+      {!hasSchedule && canEdit && (
+        <div className="rounded-lg bg-amber-50 p-3">
+          <p className="text-xs text-amber-800">Sin horario base el sistema no sabe qué horas pagar. Al guardarlo, se recalcula solo.</p>
+          <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} suggestion={suggestWeekly(byDate, 1)} onChange={onChanged} defaultFrom={from} />
+        </div>)}
+      <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={all} onChange={e => setAll(e.target.checked)} />Ver todos los días (no solo los que tienen algo)</label>
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+      <table className="w-full text-left text-xs">
+        <thead className="text-slate-500"><tr><th className="py-1">Día</th><th>Checadas</th><th>Pagable</th><th>Situación</th><th /></tr></thead>
+        <tbody>{shown.map(d => (
+          <tr key={d.date} className="border-t align-top">
+            <td className="py-1.5">{dayLabel(d.date)}</td>
+            <td>{d.punches.join(' ') || '—'}{d.resolvedBy.includes('corregir_checadas') && <span className="text-slate-400"> (corregidas)</span>}</td>
+            <td>{hm(d.paidMinutes)}{d.approvedExtraMinutes > 0 && <span className="text-green-700"> (+{hm(d.approvedExtraMinutes)} extra)</span>}</td>
+            <td>{d.issues.length === 0 && d.notes.length === 0 ? <span className="text-green-700">OK</span> : d.issues.map(i => (
+              <span key={i} className={`mr-1 rounded px-1 ${d.pending.includes(i) ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500 line-through'}`}>
+                {ISSUE_LABEL[i]}{i === 'retardo' ? ` ${d.lateMinutes} min` : ''}{i === 'fuera_de_horario' ? ` ${d.outsideBlocks.map(b => `${b.start}–${b.end}`).join(', ')}` : ''}</span>))}
+              {d.notes.map((n, k) => <span key={k} className="mr-1 rounded bg-blue-50 px-1 text-blue-700">{n}</span>)}
+              {d.excused && <span className="text-slate-500">justificada</span>}</td>
+            <td className="space-x-2 whitespace-nowrap text-right">{canEdit && <>
+              {(d.pending.includes('fuera_de_horario') || d.pending.includes('sin_horario')) && <button className="text-green-700" onClick={() => setAsk({ d, kind: 'aprobar_extra' })}>Pagar extra</button>}
+              {d.pending.includes('falta') && <button className="text-brand" onClick={() => setAsk({ d, kind: 'justificar_falta' })}>Justificar</button>}
+              {d.pending.includes('retardo') && <button className="text-brand" onClick={() => setAsk({ d, kind: 'quitar_retardo' })}>Quitar retardo</button>}
+              <button className="text-brand" onClick={() => setFix(d)}>Corregir</button>
+              {d.pending.length > 0 && <button className="text-slate-600" onClick={() => setAsk({ d, kind: 'aceptar' })}>Dejar así</button>}</>}</td>
+          </tr>))}
+          {shown.length === 0 && <tr><td colSpan={5} className="py-3 text-slate-500">Nada pendiente. Marca "Ver todos los días" para revisar o corregir cualquier día.</td></tr>}
+        </tbody>
+      </table>
+      {fix && <FixPunches d={fix} name={emp.full_name} onCancel={() => setFix(null)} onSave={(times, reason) => save(fix, 'corregir_checadas', reason, times)} />}
+      {ask && <Reason kind={ask.kind} d={ask.d} onCancel={() => setAsk(null)} onSave={reason => save(ask.d, ask.kind, reason)} />}
+    </Modal>
+  );
+}
+
+const REASONS: Record<ReviewKind, string[]> = {
+  aprobar_extra: ['Clase extra', 'Curso', 'Competencia', 'Cubrió a otro coach'],
+  justificar_falta: ['Permiso', 'Incapacidad', 'Vacaciones', 'Día festivo'],
+  quitar_retardo: ['Autorizado por dirección', 'Falla del checador', 'Actividad de la escuela'],
+  aceptar: ['Revisado, está correcto'],
+  corregir_checadas: ['Olvidó checar', 'Falla del checador', 'Checó de más'],
+};
+const TITLES: Record<ReviewKind, string> = { aprobar_extra: 'Pagar trabajo fuera de horario', justificar_falta: 'Justificar falta',
+  quitar_retardo: 'Quitar retardo', aceptar: 'Dejar así', corregir_checadas: 'Corregir checadas' };
+
+function Reason({ kind, d, onCancel, onSave }: { kind: ReviewKind; d: ReviewedDay; onCancel: () => void; onSave: (r: string) => void }) {
+  const [r, setR] = useState(REASONS[kind][0]);
+  return (
+    <Modal title={`${TITLES[kind]} · ${dayLabel(d.date)}`} onClose={onCancel}>
+      <div className="flex flex-wrap gap-2">{REASONS[kind].map(x => <button key={x} type="button" onClick={() => setR(x)}
+        className={`rounded-full border px-3 py-1 text-sm ${r === x ? 'border-brand bg-brand/10 text-brand' : ''}`}>{x}</button>)}</div>
+      <label className="block text-xs">Motivo (queda registrado)<input className={`${field} w-full`} value={r} onChange={e => setR(e.target.value)} /></label>
+      <div className="flex gap-2"><button className={btn} disabled={!r.trim()} onClick={() => onSave(r.trim())}>Guardar</button><button className="text-sm" onClick={onCancel}>Cancelar</button></div>
+    </Modal>
+  );
+}
+
+function FixPunches({ d, name, onCancel, onSave }: { d: ReviewedDay; name: string; onCancel: () => void; onSave: (times: string[], reason: string) => void }) {
+  const [times, setTimes] = useState<string[]>(d.punches.length ? [...d.punches] : ['16:00', '20:00']);
+  const [reason, setReason] = useState(REASONS.corregir_checadas[0]);
+  const odd = times.length % 2 === 1;
+  return (
+    <Modal title={`Corregir checadas · ${name} · ${dayLabel(d.date)}`} onClose={onCancel}>
+      <p className="text-xs text-slate-500">Cada par es una entrada y una salida. Las horas se eligen de 15 en 15; si la checada real era otra (16:04), se conserva.</p>
+      <div className="space-y-2">{Array.from({ length: Math.ceil(times.length / 2) }, (_, k) => (
+        <div key={k} className="flex items-center gap-2 text-sm">
+          <span className="w-16 text-xs text-slate-500">Bloque {k + 1}</span>
+          Entrada <TimeSelect value={times[2 * k]} onChange={v => setTimes(times.map((t, i) => i === 2 * k ? v : t))} />
+          Salida {times[2 * k + 1] !== undefined ? <TimeSelect value={times[2 * k + 1]} onChange={v => setTimes(times.map((t, i) => i === 2 * k + 1 ? v : t))} />
+            : <button className="text-xs text-brand" onClick={() => setTimes([...times, '20:00'])}>+ agregar salida</button>}
+          <button aria-label="Quitar bloque" className="text-red-700" onClick={() => setTimes(times.filter((_, i) => i !== 2 * k && i !== 2 * k + 1))}>×</button>
+        </div>))}</div>
+      <button className="text-xs text-brand" onClick={() => setTimes(odd ? [...times, '20:00'] : [...times, '06:00', '08:00'])}>{odd ? '+ agregar salida' : '+ agregar bloque'}</button>
+      <label className="block text-xs">Motivo<select className={`${field} w-full`} value={reason} onChange={e => setReason(e.target.value)}>{REASONS.corregir_checadas.map(r => <option key={r}>{r}</option>)}</select></label>
+      {odd && <p className="text-xs text-amber-700">Falta una salida.</p>}
+      <div className="flex gap-2"><button className={btn} onClick={() => onSave([...times].sort(), reason)}>Guardar corrección</button><button className="text-sm" onClick={onCancel}>Cancelar</button></div>
+    </Modal>
   );
 }

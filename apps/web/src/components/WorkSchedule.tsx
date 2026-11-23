@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
+import { TimeSelect } from './ui';
 
 const field = 'w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const DAYS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -89,8 +90,8 @@ export default function WorkSchedulePanel({ employeeId, companyId, suggestion, o
                 {mine.length === 0 && <span className="text-xs text-slate-400">no trabaja</span>}
                 {mine.map(({ b, k }) => (
                   <span key={k} className="flex items-center gap-1">
-                    <input type="time" className={`${field} w-28`} value={b.start} onChange={e => setDraft(draft.map((x, j) => j === k ? { ...x, start: e.target.value } : x))} />–
-                    <input type="time" className={`${field} w-28`} value={b.end} onChange={e => setDraft(draft.map((x, j) => j === k ? { ...x, end: e.target.value } : x))} />
+                    <TimeSelect className={`${field} w-24`} value={b.start} onChange={v => setDraft(draft.map((x, j) => j === k ? { ...x, start: v } : x))} />–
+                    <TimeSelect className={`${field} w-24`} value={b.end} onChange={v => setDraft(draft.map((x, j) => j === k ? { ...x, end: v } : x))} />
                     <button type="button" aria-label="Quitar" className="text-red-700" onClick={() => setDraft(draft.filter((_, j) => j !== k))}>×</button>
                   </span>))}
                 <button type="button" className="text-xs text-brand" onClick={() => setDraft([...draft, { weekday: i, start: '16:00', end: '20:00' }])}>+ bloque</button>
@@ -118,8 +119,8 @@ export default function WorkSchedulePanel({ employeeId, companyId, suggestion, o
           <label className="text-xs">Tipo<select className={field} value={exF.kind} onChange={e => setExF({ ...exF, kind: e.target.value as Kind })}>
             {Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></label>
           {exF.kind !== 'sin_actividad' && <div className="flex items-end gap-1 text-xs">
-            <input type="time" className={field} value={exF.start} onChange={e => setExF({ ...exF, start: e.target.value })} />–
-            <input type="time" className={field} value={exF.end} onChange={e => setExF({ ...exF, end: e.target.value })} /></div>}
+            <TimeSelect className={field} value={exF.start} onChange={v => setExF({ ...exF, start: v })} />–
+            <TimeSelect className={field} value={exF.end} onChange={v => setExF({ ...exF, end: v })} /></div>}
           {exF.kind !== 'sin_actividad' && <label className="flex items-center gap-2 text-xs sm:col-span-3"><input type="checkbox" checked={exF.replaces}
             onChange={e => setExF({ ...exF, replaces: e.target.checked })} />Ese día SOLO cuenta este horario (p. ej. competencia en lugar de su horario normal)</label>}
           <label className="text-xs sm:col-span-2">Motivo<input className={field} value={exF.reason} onChange={e => setExF({ ...exF, reason: e.target.value })} /></label>

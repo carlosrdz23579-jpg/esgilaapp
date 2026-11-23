@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { usePersisted } from '../lib/usePersisted';
 import { useAuth } from '../lib/auth';
 import Employees from './Employees';
 import Companies from './Companies';
 import Attendance from './Attendance';
 import Payroll from './Payroll';
 import Cash from './Cash';
+import Warmup from './Warmup';
 
 interface Mod { key: string; label: string; icon: string; visible: (a: ReturnType<typeof useAuth>) => boolean }
 const ALWAYS = () => true;
@@ -13,6 +15,7 @@ export const MODULES: Mod[] = [
   { key: 'empresas', label: 'Empresas', icon: '🏢', visible: a => a.can('companies') },
   { key: 'empleados', label: 'Empleados', icon: '👥', visible: a => a.can('employees') || a.headCoachOf.length > 0 },
   { key: 'asistencia', label: 'Asistencia (checador)', icon: '⏱️', visible: a => a.can('payroll_hours') },
+  { key: 'calentamiento', label: 'Calentamiento', icon: '🤸', visible: a => a.can('warmup') },
   { key: 'nomina', label: 'Nómina', icon: '🧾', visible: ALWAYS },   // cada quien ve al menos su propia nómina
   { key: 'reportes', label: 'Reportes', icon: '📊', visible: a => a.can('reports_financial') || a.can('reports_shared') },
   { key: 'efectivo', label: 'Calculadora de efectivo', icon: '💵', visible: a => a.can('cash') },
@@ -26,7 +29,7 @@ export const MODULES: Mod[] = [
 
 export default function Shell() {
   const auth = useAuth();
-  const [active, setActive] = useState('inicio');
+  const [active, setActive] = usePersisted<string>('modulo', 'inicio');
   const [open, setOpen] = useState(false);
   const mods = MODULES.filter(m => m.visible(auth));
   const current = mods.find(m => m.key === active) ?? mods[0];
@@ -59,7 +62,7 @@ export default function Shell() {
         </header>
         <main className="flex-1 p-4">
           <h2 className="mb-4 text-xl font-semibold">{current?.label}</h2>
-          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : (
+          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : current?.key === 'calentamiento' ? <Warmup /> : (
             <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
               Módulo en construcción (aún sin funcionalidad). Empresas cargadas: {auth.companies.length}.
             </div>)}

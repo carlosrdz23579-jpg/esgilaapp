@@ -5,7 +5,7 @@ begin
   select count(*) into n from public.companies;            if n <> 2  then raise exception 'empresas: %', n; end if;
   select count(*) into n from public.departments;          if n <> 4  then raise exception 'departamentos: %', n; end if;
   select count(*) into n from public.groups;               if n <> 12 then raise exception 'grupos: %', n; end if;
-  select count(*) into n from public.permission_grants;    if n <> 91 then raise exception 'permisos admin: %', n; end if;
+  select count(*) into n from public.permission_grants where module <> 'warmup';    if n <> 91 then raise exception 'permisos admin: %', n; end if;
   select count(*) into n from public.pay_schedules where cutoff = 'dia_anterior';
   if n <> 2 then raise exception 'calendarios con corte dia_anterior: %', n; end if;
   insert into public.employees (company_id, full_name, department_id)
@@ -394,4 +394,22 @@ begin
     values (run, car, 140000, 150000, 140000, 'sobraron $100, regresan a caja');
   reset role;
   raise notice 'OK: efectivo (forma de pago, conciliación con nota obligatoria si hay diferencia)';
+end $$;
+
+-- 0018: calentamiento
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.warmup_marks (company_id, employee_id, date, active) values (car, c1, app.today_mx() - 1, false);
+  insert into public.warmup_marks (company_id, employee_id, date, active, note) values (car, c1, app.today_mx() - 1, true, 'me equivoqué');
+  if (select active from public.warmup_latest where employee_id = c1 and date = app.today_mx() - 1) is not true then raise exception 'último registro'; end if;
+  ok := false; begin insert into public.warmup_marks (company_id, employee_id, date, active) values (car, c1, app.today_mx() + 1, false); exception when others then ok := true; end;
+  if not ok then raise exception 'marcó día futuro'; end if;
+  reset role;
+  raise notice 'OK: calentamiento';
 end $$;

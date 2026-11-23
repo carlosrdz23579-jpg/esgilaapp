@@ -118,7 +118,12 @@ export interface DayEvaluation {
   earlyLeaveMinutes: number;
   outsideBlocks: Block[];       // trabajo fuera del horario: se paga solo si se aprueba
   issues: DayIssue[];
+  notes: string[];              // ajustes automáticos que el nominista debe ver (p. ej. salida ajustada por tolerancia)
 }
+
+/** Redondeo a media hora: hacia abajo para tiempo parcial del horario, al más cercano para extras. */
+export const floor30 = (m: number) => Math.floor(m / 30) * 30;
+export const round30 = (m: number) => Math.round(m / 30) * 30;
 
 const toMin = (t: string) => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 const toHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
@@ -126,6 +131,9 @@ const toHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 /**
  * Reglas (confirmadas con ESGILA):
  * - Las horas pagadas son las del horario: llegar antes o salir después no suma.
+ * - Salida hasta la tolerancia antes de su hora (p. ej. 19:45 con salida a las 20:00): se paga completo
+ *   y se anota el ajuste. Salida antes de eso: "salida temprana" (a revisión) y se paga hasta la media
+ *   hora completa anterior. Un bloque completo se paga tal como está en el horario.
  * - Tolerancia (15 min por defecto; configurable por empresa): si entra dentro de ella no es retardo.
  * - Retardo: se pagan TODAS las horas del horario; la sanción es aparte (25 % de una hora,
  *   en computePayroll). Los minutos tarde solo se informan.
@@ -135,7 +143,7 @@ const toHHMM = (m: number) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 export function evaluateDay(date: string, punches: string[], schedule: Block[], toleranceMin = 15): DayEvaluation {
   const blocks = schedule.map(b => ({ s: toMin(b.start), e: toMin(b.end) })).filter(b => b.e > b.s).sort((a, b) => a.s - b.s);
   const scheduled = blocks.reduce((n, b) => n + (b.e - b.s), 0);
-  const ev: DayEvaluation = { date, scheduledMinutes: scheduled, paidMinutes: 0, lateMinutes: 0, earlyLeaveMinutes: 0, outsideBlocks: [], issues: [] };
+  const ev: DayEvaluation = { date, scheduledMinutes: scheduled, paidMinutes: 0, lateMinutes: 0, earlyLeaveMinutes: 0, outsideBlocks: [], issues: [], notes: [] };
   const ts = [...punches].map(toMin).sort((a, b) => a - b);
 
   if (ts.length === 0) { if (scheduled > 0) ev.issues.push('falta'); return ev; }
@@ -151,10 +159,16 @@ export function evaluateDay(date: string, punches: string[], schedule: Block[], 
     const firstIn = Math.min(...touching.map(p => p.s));
     const lastOut = Math.max(...touching.map(p => p.e));
     if (firstIn > b.s + toleranceMin) { ev.lateMinutes += firstIn - b.s; if (!ev.issues.includes('retardo')) ev.issues.push('retardo'); }
-    if (lastOut < b.e) { ev.earlyLeaveMinutes += b.e - lastOut; if (!ev.issues.includes('salida_temprana')) ev.issues.push('salida_temprana'); }
-    for (const p of touching) {
-      const s = p.s === firstIn ? b.s : Math.max(p.s, b.s), e = Math.min(p.e, b.e);   // llegar tarde no descuenta minutos
-      if (e > s) ev.paidMinutes += e - s;
+    // Llegar tarde no descuenta minutos (la sanción es la rebaja aparte): el bloque se cuenta desde su inicio.
+    if (lastOut >= b.e) {
+      ev.paidMinutes += b.e - b.s;
+    } else if (b.e - lastOut <= toleranceMin) {
+      ev.paidMinutes += b.e - b.s;
+      ev.notes.push(`Salida ${toHHMM(lastOut)} ajustada a ${toHHMM(b.e)} (dentro de la tolerancia)`);
+    } else {
+      ev.earlyLeaveMinutes += b.e - lastOut;
+      if (!ev.issues.includes('salida_temprana')) ev.issues.push('salida_temprana');
+      ev.paidMinutes += floor30(Math.max(0, lastOut - b.s));
     }
   }
   for (const p of pairs) if (!blocks.some(b => p.e > b.s && p.s < b.e)) ev.outsideBlocks.push({ start: toHHMM(p.s), end: toHHMM(p.e) });

@@ -5,7 +5,9 @@ import { formatMXN } from '../lib/money';
 import { loadAttendance, addDays, type EmpLite } from '../lib/attendanceData';
 import { effectiveFor, toConfig, type Schedule } from './Companies';
 import { periodsBetween } from '@domain/pay-calendar';
-import { computePeriodLine, type PeriodLine } from '@domain/period-payroll';
+import { computePeriodLine, recomputeLine, type PeriodLine } from '@domain/period-payroll';
+import { usePersisted } from '../lib/usePersisted';
+import { Modal, HALF_HOURS } from './ui';
 import type { Concept } from '@domain/concepts';
 import type { Deduction } from '@domain/deductions';
 import { loanLinesForPeriod, type Loan, type LoanSkip } from '@domain/loans';
@@ -44,7 +46,7 @@ function PayrollAdmin({ companyId }: { companyId: string }) {
   const [emps, setEmps] = useState<EmpLite[]>([]);
   const [scheds, setScheds] = useState<Schedule[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [sel, setSel] = useState<string>('');
+  const [sel, setSel] = usePersisted<string>(`nomina:periodo:${companyId}`, '');
   const [msg, setMsg] = useState<string | null>(null);
 
   const loadBase = useCallback(async () => {
@@ -57,7 +59,7 @@ function PayrollAdmin({ companyId }: { companyId: string }) {
     const err = e.error ?? s.error ?? r.error; if (err) setMsg(err.message);
     setEmps((e.data as EmpLite[]) ?? []); setScheds((s.data as Schedule[]) ?? []); setRuns((r.data as Run[]) ?? []);
   }, [companyId]);
-  useEffect(() => { loadBase(); setSel(''); }, [loadBase]);
+  useEffect(() => { loadBase(); }, [loadBase]);
 
   // Periodos recientes según el calendario de cada persona (semanal, quincenal…).
   const periods = useMemo(() => {
@@ -102,7 +104,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
   { companyId: string; period: PeriodOpt; run: Run | null; onChanged: () => void; canEdit: boolean; canAuth: boolean; isDirector: boolean }) {
   const [lines, setLines] = useState<Line[]>([]); const [versions, setVersions] = useState<Version[]>([]); const [confs, setConfs] = useState<Conf[]>([]);
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState<string | null>(null); const [info, setInfo] = useState<string | null>(null);
-  const [open, setOpen] = useState<string | null>(null); const [showVersions, setShowVersions] = useState(false);
+  const [open, setOpen] = usePersisted<string | null>(`nomina:abierto:${period.start}:${period.end}`, null); const [showVersions, setShowVersions] = useState(false);
   const names = useMemo(() => Object.fromEntries(period.emps.map(x => [x.emp.id, x.emp.full_name])), [period]);
 
   const load = useCallback(async () => {
@@ -121,15 +123,17 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
     setBusy(true); setMsg(null); setInfo(null);
     try {
       const ids = period.emps.map(x => x.emp.id);
-      const [att, cc, xe, dd, ln] = await Promise.all([
+      const [att, cc, xe, dd, ln, wu] = await Promise.all([
         loadAttendance(companyId, period.emps.map(x => x.emp), period.start, period.end),
         supabase.from('compensation_concepts').select('employee_id,concept_key,label,kind,amount_cents,weekdays,active,effective_from,created_at')
           .in('employee_id', ids).lte('effective_from', period.end).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
         supabase.from('extra_earnings').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
         supabase.from('deductions').select('id,employee_id,label,amount_cents,kind,start_date,end_date,status').in('employee_id', ids).eq('status', 'autorizado'),
         supabase.from('loans').select('id,employee_id,lender,principal_cents,interest_cents,installment_cents,start_date,status').in('employee_id', ids).eq('status', 'activo'),
+        supabase.from('warmup_latest').select('employee_id,date,active').in('employee_id', ids).gte('date', period.start).lte('date', period.end),
       ]);
-      const err = cc.error ?? xe.error ?? dd.error ?? ln.error; if (err) throw err;
+      const err = cc.error ?? xe.error ?? dd.error ?? ln.error ?? wu.error; if (err) throw err;
+      const noWarm = new Set(((wu.data ?? []) as { employee_id: string; date: string; active: boolean }[]).filter(w => !w.active).map(w => `${w.employee_id}|${w.date}`));
       type LoanRow = { id: string; employee_id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string; status: Loan['status'] };
       const loanRows = (ln.data as LoanRow[]) ?? [];
       const loanIds = loanRows.map(l => l.id);
@@ -157,7 +161,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         const line = computePeriodLine({
           period: { start: period.start, end: period.end }, payDate, lateDeductionBps: LATE_BPS, concepts,
           days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
-            late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0 })),
+            late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) })),
           extras: (xe.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           deductions: (dd.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           loanLines: loanLinesForPeriod(loanRows.filter(l => l.employee_id === emp.id).map(l => ({
@@ -207,6 +211,25 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
   }
 
   const conf = (id: string) => confs.find(c => c.employee_id === id && c.version === run?.current_version);
+  const [editing, setEditing] = useState(false);
+  const openLine = lines.find(l => l.employee_id === open) ?? null;
+  useEffect(() => { setEditing(false); }, [open]);
+
+  /** Edición a mano: se recalcula la línea con los mismos datos y se guarda TODO como versión nueva. */
+  async function saveEdit(updated: Line, note: string) {
+    if (!run) return;
+    setBusy(true); setMsg(null);
+    const out = lines.map(l => {
+      const x = l.employee_id === updated.employee_id ? updated : l;
+      return { employee_id: x.employee_id, pay_date: x.pay_date, gross_cents: String(x.gross_cents), deduction_cents: String(x.deduction_cents),
+        net_cents: String(x.net_cents), reported_cents: x.reported_cents == null ? null : String(x.reported_cents), detail: x.detail };
+    });
+    const totals = { net: out.reduce((n, l) => n + BigInt(l.net_cents), 0n).toString(), people: out.length };
+    const v = await supabase.rpc('save_payroll_version', { p_run: run.id, p_note: note, p_lines: out, p_totals: totals });
+    setBusy(false);
+    if (v.error) return setMsg(v.error.message);
+    setEditing(false); setInfo(`Versión ${v.data} guardada (${note}).`); onChanged();
+  }
   const editable = !run || run.status === 'borrador' || run.status === 'en_revision';
   const total = lines.reduce((n, l) => n + BigInt(l.net_cents), 0n);
   const confirmed = lines.filter(l => conf(l.employee_id)?.decision === 'confirmada').length;
@@ -243,6 +266,16 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
             </div>))}
         </div>)}
 
+      {openLine && (
+        <Modal wide onClose={() => setOpen(null)} title={<>{names[openLine.employee_id] ?? '—'} <span className="text-sm font-normal text-slate-500">· pago {fdate(openLine.pay_date)}</span></>}>
+          {editing && run?.status === 'borrador'
+            ? <LineEditor line={openLine} period={period} onCancel={() => setEditing(false)} onSave={saveEdit} busy={busy} />
+            : <>
+              <LineDetail line={openLine} />
+              {canEdit && run?.status === 'borrador' && <button className={btn} onClick={() => setEditing(true)}>Editar esta nómina</button>}
+              {canEdit && run?.status === 'en_revision' && <p className="text-xs text-slate-500">Ya está publicada a empleados. Para editar a mano, recalcula (se crea versión nueva) o pide al director que la regrese.</p>}
+            </>}
+        </Modal>)}
       {lines.length > 0 && (
         <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
           <table className="w-full text-left text-sm">
@@ -253,8 +286,8 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
               {[...lines].sort((a, b) => (names[a.employee_id] ?? '').localeCompare(names[b.employee_id] ?? '')).map(l => {
                 const c = conf(l.employee_id);
                 return [
-                  <tr key={l.employee_id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => setOpen(open === l.employee_id ? null : l.employee_id)}>
-                    <td className="px-3 py-2 font-medium"><span className="mr-1 text-xs text-brand">{open === l.employee_id ? '▾' : '▸'}</span>{names[l.employee_id] ?? '—'}{l.detail.warnings.length > 0 && <span title={l.detail.warnings.join('\n')} className="ml-1 text-amber-600">⚠</span>}</td>
+                  <tr key={l.employee_id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => setOpen(l.employee_id)}>
+                    <td className="px-3 py-2 font-medium"><span className="mr-1 text-xs text-brand">▸</span>{names[l.employee_id] ?? '—'}{l.detail.warnings.length > 0 && <span title={l.detail.warnings.join('\n')} className="ml-1 text-amber-600">⚠</span>}</td>
                     <td className="px-3 py-2 text-xs">{fdate(l.pay_date)}</td>
                     <td className="px-3 py-2 text-xs">{l.detail.attendedDays} días · {hm(l.detail.paidMinutes)} h{l.detail.retardos ? ` · ${l.detail.retardos} ret.` : ''}{l.detail.faltas ? ` · ${l.detail.faltas} faltas` : ''}</td>
                     <td className="px-3 py-2 text-right">{formatMXN(l.gross_cents)}</td><td className="px-3 py-2 text-right">{formatMXN(l.deduction_cents)}</td>
@@ -262,7 +295,6 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
                     <td className="px-3 py-2 text-xs">{!c ? <span className="text-slate-400">sin confirmar</span> : c.decision === 'confirmada' ? <span className="text-green-700">✓ confirmó</span>
                       : <span className="text-amber-700" title={c.comment ?? ''}>Observación: {c.comment}</span>}</td>
                   </tr>,
-                  open === l.employee_id && <tr key={l.employee_id + 'd'} className="bg-slate-50"><td colSpan={7} className="px-6 py-3"><LineDetail line={l} /></td></tr>,
                 ];
               })}
               <tr className="border-t bg-slate-50 font-semibold"><td className="px-3 py-2" colSpan={5}>Total ({lines.length} personas)</td><td className="px-3 py-2 text-right">{formatMXN(total)}</td><td /></tr>
@@ -295,7 +327,7 @@ function LineDetail({ line }: { line: Line }) {
               <tr key={x.date} className="border-t bg-white">
                 <td className="px-2 py-1">{fdate(x.date)}</td>
                 <td className="px-2 py-1 text-right">{(x.minutes / 60).toFixed(2)}</td>
-                <td className={`px-2 py-1 ${x.status === 'Falta' ? 'text-red-700' : x.status === 'Tarde' ? 'text-amber-700' : 'text-slate-500'}`}>{x.status || '—'}</td>
+                <td className={`px-2 py-1 ${x.status === 'Falta' ? 'text-red-700' : x.status === 'Tarde' ? 'text-amber-700' : 'text-slate-500'}`}>{x.status || '—'}{x.warmupInactive && <span className="ml-1 text-amber-700">· sin calentamiento</span>}</td>
               </tr>))}
           </tbody>
         </table>
@@ -310,6 +342,8 @@ function LineDetail({ line }: { line: Line }) {
           {row('Nómina', formatMXN(conceptsTotal))}
           {extras > 0n && d.extras.map((x, i) => <tr key={'x' + i} className="border-t"><td className="py-1.5">+ {x.label}</td><td className="py-1.5 text-right">{formatMXN(x.amount)}</td></tr>)}
           {row('Rebajas por retardos', late ? `−${formatMXN(late)}` : formatMXN(0))}
+          {d.warmup && row(`Calentamiento no activo (${d.warmup.days} día(s))`, `−${formatMXN(d.warmup.total)}`)}
+          {(d.manual ?? []).map((m, i) => <tr key={'m' + i} className="border-t"><td className="py-1.5">{BigInt(m.amount) > 0n ? '+' : '−'} {m.label} <span className="text-xs text-slate-400">(a mano)</span></td><td className="py-1.5 text-right">{formatMXN(m.amount)}</td></tr>)}
           {other > 0n && d.deductions.map((x, i) => <tr key={'d' + i} className="border-t"><td className="py-1.5">− {x.label}</td><td className="py-1.5 text-right">−{formatMXN(x.amount)}</td></tr>)}
           {row('Préstamos', loans ? `−${formatMXN(loans)}` : formatMXN(0))}
           {(d.loanLines ?? []).map(l => <tr key={l.loan_id}><td colSpan={2} className="pb-1 pl-3 text-xs text-slate-500">{l.label}: {l.skipped ? 'este periodo se salta (autorizado por el director)' : `−${formatMXN(l.amount)} · saldo después: ${formatMXN(l.balance_after)}`}</td></tr>)}
@@ -386,5 +420,59 @@ function MyPayroll() {
           </div>);
       })}
     </section>
+  );
+}
+
+/** Editor libre de una línea (solo en borrador): horas por día, situación, calentamiento y ajustes a mano. */
+function LineEditor({ line, period, onCancel, onSave, busy }:
+  { line: Line; period: PeriodOpt; onCancel: () => void; onSave: (l: Line, note: string) => void; busy: boolean }) {
+  const d = line.detail;
+  const [days, setDays] = useState(d.days ?? []);
+  const [manual, setManual] = useState<{ label: string; amount: string }[]>((d.manual ?? []).map(m => ({ label: m.label, amount: String(Number(m.amount) / 100) })));
+  const [note, setNote] = useState('');
+  if (!d.inputs) return <div className="space-y-2 text-sm"><p>Esta línea se calculó antes de que existiera la edición a mano. Recalcula la nómina y podrás editarla.</p><button className="text-sm" onClick={onCancel}>Volver</button></div>;
+  const parsed = manual.map(m => ({ label: m.label.trim(), cents: Math.round(Number(m.amount) * 100) }));
+  const bad = parsed.some(m => !m.label || !Number.isFinite(m.cents) || m.cents === 0);
+  const preview = bad ? null : recomputeLine(d, { start: period.start, end: period.end }, line.pay_date, days, parsed.map(m => ({ label: m.label, amountCents: BigInt(m.cents) })));
+  const set = (i: number, p: Partial<typeof days[number]>) => setDays(days.map((x, k) => k === i ? { ...x, ...p } : x));
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-4 lg:grid-cols-2">
+        <table className="w-full text-xs">
+          <thead><tr className="bg-slate-200 text-slate-700"><th className="px-2 py-1.5 text-left">Día</th><th className="px-2 py-1.5">Horas</th><th className="px-2 py-1.5">Situación</th><th className="px-2 py-1.5">Calent.</th></tr></thead>
+          <tbody>{days.map((x, i) => (
+            <tr key={x.date} className="border-t">
+              <td className="px-2 py-1">{fdate(x.date)}</td>
+              <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.minutes} onChange={e => set(i, { minutes: +e.target.value })}>
+                {[...new Set([...HALF_HOURS, x.minutes])].sort((a, b) => a - b).map(m => <option key={m} value={m}>{(m / 60).toFixed(2)}</option>)}</select></td>
+              <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.status} onChange={e => set(i, { status: e.target.value as typeof x.status })}>
+                <option value="">—</option><option value="Tarde">Tarde</option><option value="Falta">Falta</option><option value="Justificada">Justificada</option></select></td>
+              <td className="px-2 py-1 text-center"><input type="checkbox" checked={!x.warmupInactive} onChange={e => set(i, { warmupInactive: !e.target.checked })} title="Trabajó activamente en el calentamiento" /></td>
+            </tr>))}</tbody>
+        </table>
+        <div className="space-y-2 text-sm">
+          <p className="font-medium">Ajustes a mano</p>
+          <p className="text-xs text-slate-500">Positivo suma (p. ej. 150), negativo resta (p. ej. -80). Quedan visibles en su nómina como "(a mano)".</p>
+          {manual.map((m, i) => (
+            <div key={i} className="flex gap-2">
+              <input className="grow rounded border px-2 py-1" placeholder="Concepto" value={m.label} onChange={e => setManual(manual.map((x, k) => k === i ? { ...x, label: e.target.value } : x))} />
+              <input className="w-28 rounded border px-2 py-1" inputMode="decimal" placeholder="$" value={m.amount} onChange={e => setManual(manual.map((x, k) => k === i ? { ...x, amount: e.target.value } : x))} />
+              <button aria-label="Quitar" className="text-red-700" onClick={() => setManual(manual.filter((_, k) => k !== i))}>×</button>
+            </div>))}
+          <button className="text-xs text-brand" onClick={() => setManual([...manual, { label: '', amount: '' }])}>+ agregar ajuste</button>
+          {preview && <div className="rounded-lg bg-slate-50 p-3">
+            <p>Percepciones {formatMXN(preview.grossCents)} · Descuentos {formatMXN(preview.deductionCents)}</p>
+            <p className="text-base font-semibold">Neto {formatMXN(preview.netCents)} <span className="text-xs font-normal text-slate-500">(antes {formatMXN(line.net_cents)})</span></p>
+          </div>}
+          {bad && <p className="text-xs text-amber-700">Cada ajuste necesita concepto e importe distinto de cero.</p>}
+          <label className="block text-xs">¿Qué corregiste? (queda en el historial)<input className="w-full rounded border px-2 py-1" value={note} onChange={e => setNote(e.target.value)} /></label>
+          <div className="flex gap-2">
+            <button disabled={busy || !preview || !note.trim()} className={btn} onClick={() => preview && onSave({ ...line, gross_cents: Number(preview.grossCents), deduction_cents: Number(preview.deductionCents),
+              net_cents: Number(preview.netCents), reported_cents: Number(preview.reportedCents), detail: preview.detail }, `Edición a mano: ${note.trim()}`)}>Guardar (versión nueva)</button>
+            <button className="text-sm" onClick={onCancel}>Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

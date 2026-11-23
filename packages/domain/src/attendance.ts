@@ -1,6 +1,6 @@
 // Asistencia de un día: qué horario aplica (base + excepciones) y cómo quedan las excepciones
 // después de la revisión del nominista. Sin dependencias.
-import { evaluateDay, type Block, type DayEvaluation, type DayIssue } from './checador.ts';
+import { evaluateDay, round30, type Block, type DayEvaluation, type DayIssue } from './checador.ts';
 
 export interface WeeklyBlock { weekday: number; start: string; end: string }   // 0 domingo … 6 sábado
 export type ExceptionKind = 'clase_extra' | 'curso' | 'competencia' | 'sin_actividad' | 'otro';
@@ -48,7 +48,7 @@ export function reviewDay(date: string, rawPunches: readonly string[], blocks: r
   let pending = [...ev.issues];
   let approvedExtraMinutes = 0;
   if (kinds.has('aprobar_extra')) {
-    approvedExtraMinutes = ev.outsideBlocks.reduce((n, b) => n + minutes(b), 0);
+    approvedExtraMinutes = ev.outsideBlocks.reduce((n, b) => n + round30(minutes(b)), 0);   // a la media hora más cercana
     pending = pending.filter(i => i !== 'fuera_de_horario' && i !== 'sin_horario');
   }
   const excused = kinds.has('justificar_falta');
