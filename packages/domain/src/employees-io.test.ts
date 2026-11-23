@@ -42,3 +42,12 @@ test('fecha real de Excel (Date) y número sin formato', () => {
   assert.equal(r[0].hireDate, '2023-01-09');
   assert.equal(parseMoney(600), 60000);
 });
+
+import { similarNames } from './employees-io.ts';
+test('nombres parecidos: sugerir sin confundir', () => {
+  const app = ['Itzel Gonzalez', 'Kamila Rosales Ramírez', 'Valeria Trejo Rodriguez', 'Ana Claudia Segura Torres'];
+  assert.deepEqual(similarNames('Itzel Gonzalez Guerrero', app), [0]);
+  assert.deepEqual(similarNames('Valentina Trejo Rodriguez', app), []);          // hermana: no es la misma
+  assert.deepEqual(similarNames('Ana Claudia Segura Torres (Any)', app), [3]);
+  assert.deepEqual(similarNames('Kamila Rosales', app), [1]);
+});

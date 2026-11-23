@@ -118,3 +118,19 @@ export const addMonthsIso = (iso: string, n: number) => {
   const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); d.setUTCDate(Math.min(day, last));
   return d.toISOString().slice(0, 10);
 };
+
+/**
+ * Posibles coincidencias por nombre cuando no es idéntico: todas las palabras del nombre más corto
+ * aparecen en el más largo ("Itzel Gonzalez" ⊂ "Itzel Gonzalez Guerrero"), o coinciden el primer nombre
+ * y el primer apellido. Devuelve los índices de los candidatos.
+ */
+export function similarNames(name: string, others: readonly string[]): number[] {
+  const a = normName(name).replace(/\(.*?\)/g, '').split(' ').filter(w => w.length > 1);
+  return others.map((o, i) => ({ i, b: normName(o).replace(/\(.*?\)/g, '').split(' ').filter(w => w.length > 1) }))
+    .filter(({ b }) => {
+      if (!a.length || !b.length) return false;
+      const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+      if (short.length >= 2 && short.every(w => long.includes(w))) return true;
+      return a[0] === b[0] && a.length > 1 && b.length > 1 && a[1] === b[1];
+    }).map(x => x.i);
+}

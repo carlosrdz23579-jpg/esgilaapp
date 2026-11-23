@@ -4,18 +4,20 @@ import { useAuth } from '../lib/auth';
 import { Modal } from './ui';
 import {
   parseGeneral, parseConfidential, normName, fmtDateMx, seniorityYears, monthlyEstimateCents, addMonthsIso,
-  GENERAL_HEADERS, CONFIDENTIAL_HEADERS, type GeneralRow, type ConfidentialRow,
+  similarNames, GENERAL_HEADERS, CONFIDENTIAL_HEADERS, type GeneralRow, type ConfidentialRow,
 } from '@domain/employees-io';
 
 const btn = 'rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
 const today = () => new Date().toLocaleDateString('en-CA');
 interface Co { id: string; trade_name: string }
 interface Dept { id: string; company_id: string; name: string }
-interface Existing { id: string; full_name: string; curp: string | null; company_id: string; state: string }
+type Existing = Record<string, unknown> & { id: string; full_name: string; curp: string | null; company_id: string; state: string; pay_method: string };
+type MatchKind = 'curp' | 'nombre' | 'parecido' | 'elegido' | 'nuevo';
 interface Plan {
-  g: GeneralRow; c: ConfidentialRow | null; existing: Existing | null;
+  g: GeneralRow; c: ConfidentialRow | null; existing: Existing | null; match: MatchKind; similar: string[];
   companyId: string; deptId: string | null; error: string | null;
 }
+const MATCH_LABEL: Record<MatchKind, string> = { curp: 'misma CURP', nombre: 'mismo nombre', parecido: '¿es la misma persona?', elegido: 'elegido por ti', nuevo: 'nuevo' };
 
 const sedeCompany = (sede: string, cos: Co[]) =>
   sede === 'CAR' ? cos.find(c => /car/i.test(c.trade_name))?.id : sede === 'Viñedos' ? cos.find(c => /vi[ñn]edos/i.test(c.trade_name))?.id : undefined;
@@ -30,6 +32,9 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
   const [cos, setCos] = useState<Co[]>([]); const [depts, setDepts] = useState<Dept[]>([]);
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string[] | null>(null);
+  const [all, setAll] = useState<Existing[]>([]);
+  // Con datos ya capturados: por defecto se conserva lo tuyo y solo se llena lo vacío.
+  const [mode, setMode] = useState<'conservar' | 'reemplazar'>('conservar');
 
   async function read(f: File) {
     setMsg(null); setPlans(null); setResult(null);
@@ -48,21 +53,38 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
       const [c, d, e] = await Promise.all([
         supabase.from('companies').select('id,trade_name').eq('is_active', true),
         supabase.from('departments').select('id,company_id,name').eq('is_active', true),
-        supabase.from('employees').select('id,full_name,curp,company_id,state').limit(2000),
+        supabase.from('employees').select('*').order('full_name').limit(2000),
       ]);
       const err = c.error ?? d.error ?? e.error; if (err) throw err;
       const C = (c.data as Co[]) ?? [], D = (d.data as Dept[]) ?? [], E = (e.data as Existing[]) ?? [];
-      setCos(C); setDepts(D);
+      setCos(C); setDepts(D); setAll(E);
       setPlans(gen.map(g => {
-        const existing = (g.curp && E.find(x => (x.curp ?? '').toUpperCase() === g.curp)) || E.find(x => normName(x.full_name) === normName(g.fullName)) || null;
+        const byCurp = g.curp ? E.find(x => (x.curp ?? '').toUpperCase() === g.curp) : undefined;
+        const byName = E.find(x => normName(x.full_name) === normName(g.fullName));
+        const similar = byCurp || byName ? [] : similarNames(g.fullName, E.map(x => x.full_name)).map(i => E[i].id);
+        const existing = byCurp ?? byName ?? (similar.length === 1 ? E.find(x => x.id === similar[0])! : null);
+        const match: MatchKind = byCurp ? 'curp' : byName ? 'nombre' : existing ? 'parecido' : 'nuevo';
         const companyId = existing?.company_id ?? sedeCompany(g.sede, C) ?? '';
         const deptId = companyId ? deptFor(companyId, g.isCoach, D) : null;
-        return { g, c: conf?.find(x => normName(x.fullName) === normName(g.fullName)) ?? null, existing, companyId, deptId,
+        return { g, c: conf?.find(x => normName(x.fullName) === normName(g.fullName)) ?? null, existing, match, similar, companyId, deptId,
           error: !companyId ? (g.sede === 'Ambas' ? 'Sede "Ambas": elige su sucursal principal' : 'Sin sede') : !deptId ? 'Esa sucursal no tiene departamento Coach/Staff' : null };
       }));
       if (!conf) setMsg('No encontré la hoja "Confidencial": solo se importan datos generales.');
     } catch (e) { setMsg((e as Error).message); }
   }
+
+  function setTarget(i: number, id: string) {
+    setPlans(p => p!.map((x, k) => {
+      if (k !== i) return x;
+      const existing = id ? all.find(e => e.id === id) ?? null : null;
+      const companyId = existing?.company_id ?? sedeCompany(x.g.sede, cos) ?? '';
+      const deptId = companyId ? deptFor(companyId, x.g.isCoach, depts) : null;
+      return { ...x, existing, match: existing ? 'elegido' : 'nuevo', companyId, deptId,
+        error: !companyId ? (x.g.sede === 'Ambas' ? 'Sede "Ambas": elige su sucursal principal' : 'Sin sede') : !deptId ? 'Esa sucursal no tiene departamento Coach/Staff' : null };
+    }));
+  }
+  // Dos filas del Excel no pueden ir al mismo expediente.
+  const dupTargets = new Set((plans ?? []).map(p => p.existing?.id).filter((id, i, a): id is string => !!id && a.indexOf(id) !== i));
 
   function setCompany(i: number, companyId: string) {
     setPlans(p => p!.map((x, k) => {
@@ -74,6 +96,7 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
 
   async function run() {
     if (!plans) return;
+    if (dupTargets.size) return setMsg('Hay dos filas del Excel apuntando a la misma persona: corrige el empate antes de importar.');
     const ok = plans.filter(p => !p.error);
     if (!window.confirm(`Se van a crear ${ok.filter(p => !p.existing).length} y actualizar ${ok.filter(p => p.existing).length} expediente(s)${plans.length - ok.length ? `; ${plans.length - ok.length} se omiten por tener pendientes` : ''}. ¿Continuar?`)) return;
     setBusy(true); const out: string[] = [];
@@ -87,21 +110,29 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
         contract_type: nz(p.c?.contractType ?? ''), bank: nz(p.c?.bank ?? ''),
       };
       if (p.c?.payMethod) data.pay_method = p.c.payMethod;
-      // No borrar lo que ya existe con celdas vacías del Excel.
-      if (p.existing) for (const k of Object.keys(data)) if (data[k] === null || data[k] === undefined) delete data[k];
+      // Nunca se borra con celdas vacías. Al conservar, solo se llena lo que en la app está vacío (y no se cambian nombre ni estatus).
+      const ex = p.existing;
+      if (ex) for (const k of Object.keys(data)) {
+        const empty = (v: unknown) => v === null || v === undefined || v === '';
+        if (empty(data[k]) || (mode === 'conservar' && !empty(ex[k]))) delete data[k];
+      }
+      if (ex && mode === 'conservar') { delete data.full_name; if (p.c?.payMethod && ex.pay_method) delete data.pay_method; }
       const state = g.active ? 'activo' : 'baja';
-      let id = p.existing?.id;
-      const r = p.existing
-        ? await supabase.from('employees').update({ ...data, ...(p.existing.state !== state ? { state } : {}) }).eq('id', p.existing.id).select('id')
+      const changeState = ex && mode === 'reemplazar' && ex.state !== state;
+      let id = ex?.id;
+      if (ex && Object.keys(data).length === 0 && !changeState && !(canPay && p.c?.importPay)) { out.push(`= Sin cambios: ${ex.full_name}`); continue; }
+      const r = ex
+        ? await supabase.from('employees').update({ ...data, ...(changeState ? { state } : {}) }).eq('id', ex.id).select('id')
         : await supabase.from('employees').insert({ ...data, company_id: p.companyId, department_id: p.deptId, state }).select('id');
       if (r.error || !r.data?.length) { out.push(`✗ ${g.fullName}: ${r.error?.message ?? 'sin permiso'}`); continue; }
       id = (r.data[0] as { id: string }).id;
-      let line = `${p.existing ? '↻ Actualizado' : '+ Creado'}: ${g.fullName}`;
+      let line = `${ex ? `↻ Actualizado (${mode === 'conservar' ? 'solo campos vacíos' : 'reemplazando'})` : '+ Creado'}: ${ex?.full_name ?? g.fullName}${ex && normName(ex.full_name) !== normName(g.fullName) ? ` ← "${g.fullName}"` : ''}`;
       // Pago por hora (solo contrato "Por horas") con su historial: anterior desde el ingreso, actual desde el último aumento.
       if (canPay && p.c?.importPay && p.c.hourlyCents) {
-        const ex = await supabase.from('compensation_concepts').select('effective_from').eq('employee_id', id).eq('concept_key', 'hora');
-        const have = new Set(((ex.data ?? []) as { effective_from: string }[]).map(x => x.effective_from));
+        const exc = await supabase.from('compensation_concepts').select('effective_from').eq('employee_id', id).eq('concept_key', 'hora');
+        const have = new Set(((exc.data ?? []) as { effective_from: string }[]).map(x => x.effective_from));
         const rows = [];
+        if (mode === 'conservar' && have.size > 0) { out.push(`${line} · pago: se conserva el que ya capturaste`); continue; }
         const curFrom = p.c.lastRaiseDate ?? g.hireDate ?? today();
         if (p.c.previousHourlyCents && p.c.lastRaiseDate) {
           const prevFrom = g.hireDate && g.hireDate < p.c.lastRaiseDate ? g.hireDate : null;
@@ -129,15 +160,29 @@ export function ImportEmployees({ onClose, onDone }: { onClose: () => void; onDo
       </>}
       {msg && <p className="rounded bg-amber-50 p-2 text-sm text-amber-800">{msg}</p>}
       {plans && !result && <>
+        <div className="flex flex-wrap gap-4 rounded-lg bg-slate-50 p-3 text-sm">
+          <span className="font-medium">Si la persona ya existe en la app:</span>
+          <label className="flex items-center gap-1"><input type="radio" checked={mode === 'conservar'} onChange={() => setMode('conservar')} />Conservar lo que ya capturé y solo llenar lo vacío</label>
+          <label className="flex items-center gap-1"><input type="radio" checked={mode === 'reemplazar'} onChange={() => setMode('reemplazar')} />Reemplazar con lo del Excel (celdas vacías no borran)</label>
+        </div>
+        {dupTargets.size > 0 && <p className="rounded bg-red-50 p-2 text-sm text-red-700">Dos filas del Excel apuntan a la misma persona (en rojo). Corrige el empate.</p>}
         <p className="text-sm"><b>{cnt(p => !p.existing && !p.error)}</b> nuevos · <b>{cnt(p => !!p.existing && !p.error)}</b> a actualizar · <b className="text-amber-700">{cnt(p => !!p.error)}</b> con pendientes
           {!canPay && <span className="text-slate-500"> · tu perfil no importa pagos (solo datos generales)</span>}</p>
         <div className="max-h-[55vh] overflow-auto rounded border">
           <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-slate-100 text-slate-500"><tr><th className="px-2 py-1">Acción</th><th>Nombre</th><th>Puesto</th><th>Sucursal</th><th>Estatus</th>{canPay && <th>Pago</th>}<th>Avisos</th></tr></thead>
+            <thead className="sticky top-0 bg-slate-100 text-slate-500"><tr><th className="px-2 py-1">Nombre en el Excel</th><th>Se empata con</th><th>Puesto</th><th>Sucursal</th><th>Estatus</th>{canPay && <th>Pago</th>}<th>Avisos</th></tr></thead>
             <tbody>{plans.map((p, i) => (
-              <tr key={i} className={`border-t align-top ${p.error ? 'bg-amber-50' : ''}`}>
-                <td className="px-2 py-1">{p.existing ? 'Actualizar' : 'Crear'}</td>
+              <tr key={i} className={`border-t align-top ${p.existing && dupTargets.has(p.existing.id) ? 'bg-red-50' : p.error ? 'bg-amber-50' : p.match === 'parecido' || (!p.existing && p.similar.length) ? 'bg-blue-50' : ''}`}>
                 <td className="px-2 py-1 font-medium">{p.g.fullName}</td>
+                <td className="px-2 py-1">
+                  <select className="max-w-[14rem] rounded border px-1" value={p.existing?.id ?? ''} onChange={e => setTarget(i, e.target.value)}>
+                    <option value="">+ Crear persona nueva</option>
+                    {p.similar.length > 0 && <optgroup label="Parecidos">{p.similar.map(id => <option key={id} value={id}>{all.find(e => e.id === id)?.full_name}</option>)}</optgroup>}
+                    <optgroup label="Todos">{all.map(e => <option key={e.id} value={e.id}>{e.full_name}</option>)}</optgroup>
+                  </select>
+                  <span className={`block text-[11px] ${p.match === 'parecido' || (!p.existing && p.similar.length) ? 'font-medium text-blue-700' : 'text-slate-400'}`}>
+                    {!p.existing && p.similar.length > 1 ? `hay ${p.similar.length} parecidos: elige o crea nueva` : MATCH_LABEL[p.match]}</span>
+                </td>
                 <td className="px-2 py-1">{p.g.jobTitle} <span className="text-slate-400">· {p.g.isCoach ? 'Coach' : 'Staff'}</span></td>
                 <td className="px-2 py-1">{p.existing ? cos.find(c => c.id === p.companyId)?.trade_name
                   : <select className="rounded border px-1" value={p.companyId} onChange={e => setCompany(i, e.target.value)}>
