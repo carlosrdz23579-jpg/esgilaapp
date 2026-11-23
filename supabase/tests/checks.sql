@@ -410,6 +410,9 @@ begin
   if (select active from public.warmup_latest where employee_id = c1 and date = app.today_mx() - 1) is not true then raise exception 'último registro'; end if;
   ok := false; begin insert into public.warmup_marks (company_id, employee_id, date, active) values (car, c1, app.today_mx() + 1, false); exception when others then ok := true; end;
   if not ok then raise exception 'marcó día futuro'; end if;
+  ok := false; begin insert into public.warmup_marks (company_id, employee_id, date, active)
+    values (car, (select id from public.employees where full_name = 'Staff 1'), app.today_mx() - 1, false); exception when others then ok := true; end;
+  if not ok then raise exception 'marcó calentamiento a Staff'; end if;
   reset role;
-  raise notice 'OK: calentamiento';
+  raise notice 'OK: calentamiento (solo coaches)';
 end $$;

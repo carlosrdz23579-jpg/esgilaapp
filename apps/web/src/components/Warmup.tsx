@@ -4,7 +4,7 @@ import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
 
 const WD = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
-interface Emp { id: string; full_name: string; company_id: string; work_days: number[] }
+interface Emp { id: string; full_name: string; company_id: string; work_days: number[]; department_id: string }
 interface Mark { employee_id: string; date: string; active: boolean }
 
 /** Calendario del mes: por persona y por cada uno de sus días de trabajo, si trabajó activamente en el calentamiento.
@@ -25,9 +25,13 @@ export default function Warmup() {
   const load = useCallback(async () => {
     if (companyId === 'all') return;
     setMsg(null);
-    const e = await supabase.from('employees').select('id,full_name,company_id,work_days').eq('company_id', companyId).eq('state', 'activo').order('full_name');
-    if (e.error) return setMsg(e.error.message);
-    const list = (e.data as Emp[]) ?? []; setEmps(list);
+    // Solo coaches: el calentamiento no aplica a Staff.
+    const [e, dp] = await Promise.all([
+      supabase.from('employees').select('id,full_name,company_id,work_days,department_id').eq('company_id', companyId).eq('state', 'activo').order('full_name'),
+      supabase.from('departments').select('id,name').eq('company_id', companyId)]);
+    if (e.error || dp.error) return setMsg((e.error ?? dp.error)!.message);
+    const coach = new Set(((dp.data as { id: string; name: string }[]) ?? []).filter(d => d.name.trim().toLowerCase() === 'coach').map(d => d.id));
+    const list = ((e.data as Emp[]) ?? []).filter(x => coach.has(x.department_id)); setEmps(list);
     if (!list.length) return setMarks({});
     const w = await supabase.from('warmup_latest').select('employee_id,date,active').in('employee_id', list.map(x => x.id))
       .gte('date', days[0].iso).lte('date', days[days.length - 1].iso);
@@ -49,7 +53,7 @@ export default function Warmup() {
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Mes<input type="month" className="block rounded-lg border border-slate-300 px-2 py-1.5 text-sm" value={month} onChange={e => e.target.value && setMonth(e.target.value)} /></label>
-        <p className="text-xs text-slate-500">✓ = trabajó activamente en el calentamiento (así viene por defecto). Desmarca los días que no: esa primera media hora se paga a la mitad. Solo aparecen sus días de trabajo y hasta hoy.</p>
+        <p className="text-xs text-slate-500">✓ = trabajó activamente en el calentamiento (así viene por defecto). Desmarca los días que no: se descuentan 30 minutos de su tarifa. Solo coaches, solo sus días de trabajo y hasta hoy.</p>
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">

@@ -133,6 +133,8 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         supabase.from('warmup_latest').select('employee_id,date,active').in('employee_id', ids).gte('date', period.start).lte('date', period.end),
       ]);
       const err = cc.error ?? xe.error ?? dd.error ?? ln.error ?? wu.error; if (err) throw err;
+      const coachDepts = new Set(((await supabase.from('departments').select('id,name').eq('company_id', companyId)).data as { id: string; name: string }[] ?? [])
+        .filter(d => d.name.trim().toLowerCase() === 'coach').map(d => d.id));
       const noWarm = new Set(((wu.data ?? []) as { employee_id: string; date: string; active: boolean }[]).filter(w => !w.active).map(w => `${w.employee_id}|${w.date}`));
       type LoanRow = { id: string; employee_id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string; status: Loan['status'] };
       const loanRows = (ln.data as LoanRow[]) ?? [];
@@ -160,6 +162,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         const a = att.find(x => x.emp.id === emp.id)!;
         const line = computePeriodLine({
           period: { start: period.start, end: period.end }, payDate, lateDeductionBps: LATE_BPS, concepts,
+          warmupApplies: coachDepts.has(emp.department_id ?? ''),
           days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
             late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) })),
           extras: (xe.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
@@ -447,7 +450,9 @@ function LineEditor({ line, period, onCancel, onSave, busy }:
                 {[...new Set([...HALF_HOURS, x.minutes])].sort((a, b) => a - b).map(m => <option key={m} value={m}>{(m / 60).toFixed(2)}</option>)}</select></td>
               <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.status} onChange={e => set(i, { status: e.target.value as typeof x.status })}>
                 <option value="">—</option><option value="Tarde">Tarde</option><option value="Falta">Falta</option><option value="Justificada">Justificada</option></select></td>
-              <td className="px-2 py-1 text-center"><input type="checkbox" checked={!x.warmupInactive} onChange={e => set(i, { warmupInactive: !e.target.checked })} title="Trabajó activamente en el calentamiento" /></td>
+              <td className="px-2 py-1 text-center">{d.inputs.warmupApplies !== false
+                ? <input type="checkbox" checked={!x.warmupInactive} onChange={e => set(i, { warmupInactive: !e.target.checked })} title="Trabajó activamente en el calentamiento" />
+                : <span className="text-slate-300" title="Solo aplica a coaches">—</span>}</td>
             </tr>))}</tbody>
         </table>
         <div className="space-y-2 text-sm">

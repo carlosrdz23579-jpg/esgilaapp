@@ -50,11 +50,11 @@ test('por día con tarifa de referencia para retardo (Madelin: $300/día, rebaja
 });
 
 import { recomputeLine } from './period-payroll.ts';
-test('calentamiento: día sin calentamiento activo descuenta 15 min de su tarifa', () => {
+test('calentamiento: día sin calentamiento activo descuenta 30 min de su tarifa', () => {
   const d2: PeriodDay[] = days.map((x, i) => ({ ...x, late: false, scheduled: true, warmupInactive: i === 0 }));
   const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [] });
-  assert.deepEqual(l.detail.warmup, { days: 1, perDay: '2500', total: '2500' });   // $100/h → 15 min = $25
-  assert.equal(l.netCents, 240000n - 2500n);
+  assert.deepEqual(l.detail.warmup, { days: 1, perDay: '5000', total: '5000' });   // $100/h → 30 min = $50
+  assert.equal(l.netCents, 240000n - 5000n);
 });
 test('editar a mano: cambiar horas de un día y agregar un ajuste recalcula igual', () => {
   const l = computePeriodLine({ period, payDate: '2026-11-21', days: days.map(x => ({ ...x, scheduled: true })), concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [] });
@@ -63,4 +63,10 @@ test('editar a mano: cambiar horas de un día y agregar un ajuste recalcula igua
   assert.equal(r.grossCents, 230000n + 10000n);                // un día de 4 h pasó a 3 h; + bono
   assert.equal(r.deductionCents, 5000n + 5000n);              // 2 retardos (se quitó uno) + ajuste
   assert.equal(r.netCents, r.grossCents - r.deductionCents);
+});
+
+test('calentamiento no aplica a Staff', () => {
+  const d2: PeriodDay[] = days.map(x => ({ ...x, late: false, scheduled: true, warmupInactive: true }));
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [], warmupApplies: false });
+  assert.equal(l.detail.warmup, null); assert.equal(l.netCents, 240000n);
 });
