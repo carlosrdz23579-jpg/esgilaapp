@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { formatMXN, pesosToCents } from '../lib/money';
 import WorkSchedulePanel from './WorkSchedule';
+import { ImportEmployees, exportEmployees } from './EmployeesIO';
 
 type EState = 'activo' | 'suspendido' | 'baja';
 interface Dept { id: string; company_id: string; name: string; is_active: boolean }
@@ -30,6 +31,7 @@ export default function Employees() {
   const [fHead, setFHead] = useState(false);
   const [editing, setEditing] = useState<Emp | 'new' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -77,6 +79,10 @@ export default function Employees() {
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={fHead} onChange={e => setFHead(e.target.checked)} />Solo Head Coach</label>
         {can('employees', 'create') && (
           <button onClick={() => setEditing('new')} className="ml-auto rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white">+ Nuevo empleado</button>)}
+        {can('employees', 'create') && <button onClick={() => setImporting(true)} className="rounded-lg border px-3 py-2 text-sm">Importar Excel</button>}
+        {can('employees', 'view') && <button className="rounded-lg border px-3 py-2 text-sm"
+          onClick={() => exportEmployees(companyId, can('salary', 'view'), can('payroll_hours', 'view')).catch(e => setError((e as Error).message))}>Exportar Excel</button>}
+        {importing && <ImportEmployees onClose={() => setImporting(false)} onDone={load} />}
       </div>
       {error && <p className="rounded bg-red-50 p-2 text-sm text-red-700">Error: {error}</p>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
