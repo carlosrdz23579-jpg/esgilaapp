@@ -7,7 +7,7 @@ Stack: React + TypeScript + Tailwind (Vite) y Supabase. Decisiones fijas en `doc
 | Ruta | Qué es |
 |---|---|
 | `docs/ARQUITECTURA.md` | Decisiones técnicas y mapa de módulos |
-| `supabase/migrations/0001…0021` | Esquema, permisos, RLS, calendarios de pago, Head Coach, horarios, checador (entre sucursales), conceptos de pago, tolerancia por empresa, descuentos, ingresos extra, checadas y revisión de asistencia, nómina con versiones, tarifa base para retardo, préstamos, efectivo, permisos nuevos (0017, va sola), calentamiento (solo coaches, 0019), datos generales del expediente, anular historial de pago |
+| `supabase/migrations/0001…0022` | Esquema, permisos, RLS, calendarios de pago, Head Coach, horarios, checador (entre sucursales), conceptos de pago, tolerancia por empresa, descuentos, ingresos extra, checadas y revisión de asistencia, nómina con versiones, tarifa base para retardo, préstamos, efectivo, permisos nuevos (0017, va sola), calentamiento (solo coaches, 0019), datos generales del expediente, anular historial de pago, usuarios y funciones del director (0022) |
 | `supabase/seed/` | Carga inicial (ESGILA CAR y Viñedos) y calendario quincenal; se pueden repetir sin duplicar |
 | `packages/domain/src` | Cálculo puro: nómina, efectivo, calendario de pagos e importador del reloj checador (centavos/minutos enteros) |
 | `apps/web` | Aplicación React: Empleados (horario, pago, descuentos, ingresos extra, Head Coach), Empresas y calendarios, Asistencia (subir reporte del checador y revisar excepciones), Nómina (calcular por periodo, versiones/restaurar, publicar, confirmación del empleado, autorizar) |

@@ -440,3 +440,40 @@ begin
   reset role;
   raise notice 'OK: anular historial de pago';
 end $$;
+
+-- 0022: directores múltiples, pausar funciones propias, nunca sin director
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        dir2 uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  if not app.has_perm('payroll', 'authorize', car) then raise exception 'director sin nómina'; end if;
+  perform public.set_my_paused('payroll', true);
+  if app.has_perm('payroll', 'authorize', car) then raise exception 'pausado y aún autoriza'; end if;
+  if not app.has_perm('employees', 'view', car) then raise exception 'pausar nómina afectó empleados'; end if;
+  perform public.set_my_paused('payroll', false);
+  if not app.has_perm('payroll', 'authorize', car) then raise exception 'no se reactivó'; end if;
+  ok := false; begin perform public.set_my_paused('users', true); exception when others then ok := true; end;
+  if not ok then raise exception 'pausó usuarios'; end if;
+  ok := false; begin update public.app_users set role = 'admin' where id = dir; exception when others then ok := true; end;
+  if not ok then raise exception 'se quedó sin director'; end if;
+  ok := false; begin update public.app_users set paused_modules = '{cash}' where id = admin; exception when others then ok := true; end;
+  if not ok then raise exception 'pausó funciones de otro'; end if;
+  reset role;
+  -- Segundo director: con dos, uno puede dejar de serlo.
+  insert into auth.users(email) values ('dir2@x.com') returning id into dir2;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  update public.app_users set role = 'director', status = 'active' where id = dir2;
+  update public.app_users set role = 'admin' where id = dir2;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin perform public.set_my_paused('cash', true); exception when others then ok := true; end;
+  if not ok then raise exception 'un admin pausó'; end if;
+  reset role;
+  raise notice 'OK: usuarios (varios directores, pausar propias funciones, siempre un director)';
+end $$;

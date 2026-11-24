@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 
 export type Role = 'director' | 'admin' | 'rrhh' | 'empleado';
-export interface AppUser { id: string; email: string; full_name: string; role: Role; status: 'pending' | 'active' | 'suspended' }
+export interface AppUser { id: string; email: string; full_name: string; role: Role; status: 'pending' | 'active' | 'suspended'; paused_modules?: string[] }
 export interface Company { id: string; trade_name: string; is_active: boolean }
 export interface Grant { module: string; action: string; company_id: string | null }
 /** Expedientes propios donde la persona es Head Coach activo (le dan acceso a su departamento). */
@@ -53,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   const can = (module: string, action = 'view') =>
-    user?.role === 'director' ||
+    (user?.role === 'director' && !(user.paused_modules ?? []).includes(module)) ||
     grants.some(g => g.module === module && g.action === action &&
       (companyId === 'all' || g.company_id === null || g.company_id === companyId));
 
