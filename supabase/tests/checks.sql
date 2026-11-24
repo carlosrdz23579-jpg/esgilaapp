@@ -533,3 +533,19 @@ begin
   reset role;
   raise notice 'OK: calendario de coaches (líder de calentamiento, planeaciones, apuntes ocultos, asistencia de maestros)';
 end $$;
+
+-- 0025: dos calentamientos en Viñedos, uno en CAR
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos'); ok boolean;
+begin
+  if (select warmups_per_day from public.companies where id = vin) <> 2 then raise exception 'Viñedos no tiene 2'; end if;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.warmup_leaders (company_id, date, slot) values (vin, '2026-11-24', 2);
+  ok := false; begin insert into public.warmup_leaders (company_id, date, slot) values (car, '2026-11-24', 2); exception when others then ok := true; end;
+  if not ok then raise exception 'CAR aceptó 2 calentamientos'; end if;
+  reset role;
+  raise notice 'OK: calentamientos por día por sucursal';
+end $$;

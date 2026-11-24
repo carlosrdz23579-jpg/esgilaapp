@@ -78,7 +78,9 @@ function Calendar({ companyId }: { companyId: string }) {
   const { can } = useAuth();
   const [month, setMonth] = usePersisted('coaches:mes', todayMx().slice(0, 7));
   const coaches = useCoaches(companyId);
+  // Clave 'día|n' (n = calentamiento 1, 2…). Viñedos tiene 2 por día; CAR, 1.
   const [leaders, setLeaders] = useState<Record<string, string | null>>({});
+  const [slots, setSlots] = useState(1);
   const [att, setAtt] = useState<Record<string, { arrival: string | null; uniform: boolean | null }>>({});
   const [day, setDay] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -89,12 +91,14 @@ function Calendar({ companyId }: { companyId: string }) {
     return Array.from({ length: n }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   }, [month]);
   const load = useCallback(async () => {
-    const [l, a] = await Promise.all([
-      supabase.from('warmup_leader_latest').select('date,employee_id').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
+    const [l, a, c] = await Promise.all([
+      supabase.from('warmup_leader_latest').select('date,slot,employee_id').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
       supabase.from('staff_attendance_latest').select('employee_id,date,arrival,uniform').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
+      supabase.from('companies').select('warmups_per_day').eq('id', companyId).single(),
     ]);
     if (l.error) setMsg(l.error.message);
-    setLeaders(Object.fromEntries(((l.data ?? []) as { date: string; employee_id: string | null }[]).map(x => [x.date, x.employee_id])));
+    setSlots((c.data as { warmups_per_day: number } | null)?.warmups_per_day ?? 1);
+    setLeaders(Object.fromEntries(((l.data ?? []) as { date: string; slot: number; employee_id: string | null }[]).map(x => [`${x.date}|${x.slot}`, x.employee_id])));
     setAtt(Object.fromEntries(((a.data ?? []) as { employee_id: string; date: string; arrival: string | null; uniform: boolean | null }[]).map(x => [`${x.employee_id}|${x.date}`, x])));
   }, [companyId, days]);
   useEffect(() => { load(); }, [load]);
@@ -102,8 +106,8 @@ function Calendar({ companyId }: { companyId: string }) {
   const wd = (iso: string) => new Date(iso + 'T12:00:00Z').getUTCDay();
   const working = (iso: string) => coaches.filter(c => c.work_days.includes(wd(iso)));
   const name = (id: string | null | undefined) => coaches.find(c => c.id === id)?.full_name ?? '';
-  const lead = async (iso: string, empId: string) => {
-    const { error } = await supabase.from('warmup_leaders').insert({ company_id: companyId, date: iso, employee_id: empId || null });
+  const lead = async (iso: string, slot: number, empId: string) => {
+    const { error } = await supabase.from('warmup_leaders').insert({ company_id: companyId, date: iso, slot, employee_id: empId || null });
     if (error) setMsg(error.message); else load();
   };
   const offset = wd(days[0]);
@@ -126,22 +130,25 @@ function Calendar({ companyId }: { companyId: string }) {
           return (
             <div key={iso} onClick={() => setDay(iso)} className={`min-h-[5.5rem] cursor-pointer rounded-lg border bg-white p-1.5 hover:border-brand ${isToday ? 'border-brand ring-1 ring-brand' : ''} ${w.length === 0 ? 'opacity-50' : ''}`}>
               <div className="flex justify-between"><b>{+iso.slice(8)}</b>{w.length > 0 && <span className="text-slate-400">{w.length} coach(es)</span>}</div>
-              {canLead && w.length > 0
-                ? <select onClick={e => e.stopPropagation()} className="mt-1 w-full rounded border px-1 py-0.5 text-[11px]" value={leaders[iso] ?? ''} onChange={e => lead(iso, e.target.value)}>
-                    <option value="">🔥 Sin asignar</option>{w.map(c => <option key={c.id} value={c.id}>🔥 {c.full_name}</option>)}</select>
-                : leaders[iso] && <p className="mt-1 truncate">🔥 {name(leaders[iso])}</p>}
+              {w.length > 0 && Array.from({ length: slots }, (_, k) => k + 1).map(n => {
+                const v = leaders[`${iso}|${n}`] ?? '';
+                return canLead
+                  ? <select key={n} onClick={e => e.stopPropagation()} className="mt-1 w-full rounded border px-1 py-0.5 text-[11px]" value={v} onChange={e => lead(iso, n, e.target.value)}>
+                      <option value="">🔥{slots > 1 ? n : ''} Sin asignar</option>{w.map(c => <option key={c.id} value={c.id}>🔥{slots > 1 ? n : ''} {c.full_name}</option>)}</select>
+                  : v && <p key={n} className="mt-1 truncate">🔥{slots > 1 ? n : ''} {name(v)}</p>;
+              })}
               {noUni > 0 && <p className="mt-1 text-amber-700">{noUni} sin uniforme</p>}
             </div>);
         })}
       </div>
-      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} leader={leaders[day] ?? null} att={att} canAtt={canAtt}
+      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} slots={slots} leaders={Array.from({ length: slots }, (_, k) => leaders[`${day}|${k + 1}`] ?? null)} att={att} canAtt={canAtt}
         onClose={() => setDay(null)} onChanged={load} />}
     </div>
   );
 }
 
-function DayPanel({ iso, companyId, coaches, leader, att, canAtt, onClose, onChanged }:
-  { iso: string; companyId: string; coaches: Emp[]; leader: string | null; att: Record<string, { arrival: string | null; uniform: boolean | null }>;
+function DayPanel({ iso, companyId, coaches, slots, leaders, att, canAtt, onClose, onChanged }:
+  { iso: string; companyId: string; coaches: Emp[]; slots: number; leaders: (string | null)[]; att: Record<string, { arrival: string | null; uniform: boolean | null }>;
     canAtt: boolean; onClose: () => void; onChanged: () => void }) {
   const isToday = iso === todayMx();
   const [draft, setDraft] = useState<Record<string, { arrival: string; uniform: boolean; absent: boolean }>>(() =>
@@ -166,7 +173,7 @@ function DayPanel({ iso, companyId, coaches, leader, att, canAtt, onClose, onCha
             return (
               <tr key={c.id} className="border-t">
                 <td className="py-1.5 font-medium">{c.full_name}</td>
-                <td className="text-xs">{leader === c.id ? <b>🔥 Dirige</b> : 'Ayuda activamente'}</td>
+                <td className="text-xs">{leaders.includes(c.id) ? <b>🔥 Dirige{slots > 1 ? ` el ${leaders.indexOf(c.id) + 1}º` : ''}</b> : 'Ayuda activamente'}</td>
                 {canAtt && <>
                   <td>{d.absent ? '—' : <TimeSelect allowAny from="05:00" value={d.arrival} onChange={v => set(c.id, { arrival: v })} />}</td>
                   <td className="text-center"><input type="checkbox" disabled={d.absent} checked={d.uniform} onChange={e => set(c.id, { uniform: e.target.checked })} /></td>

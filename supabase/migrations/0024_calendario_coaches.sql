@@ -21,12 +21,20 @@ create table if not exists public.warmup_leaders (
   created_at  timestamptz not null default clock_timestamp()
 );
 create index if not exists wl_company_date on public.warmup_leaders (company_id, date, created_at desc);
-create or replace view public.warmup_leader_latest with (security_invoker = true) as
-  select distinct on (company_id, date) company_id, date, employee_id, created_by, created_at
-  from public.warmup_leaders order by company_id, date, created_at desc;
+-- (Solo si no existe: 0025 la reemplaza con el número de calentamiento del día.)
+do $$ begin
+  if not exists (select 1 from information_schema.views where table_schema = 'public' and table_name = 'warmup_leader_latest') then
+    create view public.warmup_leader_latest with (security_invoker = true) as
+      select distinct on (company_id, date) company_id, date, employee_id, created_by, created_at
+      from public.warmup_leaders order by company_id, date, created_at desc;
+  end if;
+end $$;
 
-create or replace function app.guard_warmup_leader() returns trigger
-language plpgsql security definer set search_path = public, app as $$
+do $outer$ begin
+  -- (Solo si no existe: 0025 la reemplaza con la validación del número de calentamiento.)
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'app' and p.proname = 'guard_warmup_leader') then
+    execute $fn$create or replace function app.guard_warmup_leader() returns trigger
+language plpgsql security definer set search_path = public, app as $body$
 begin
   if tg_op <> 'INSERT' then raise exception 'No se edita: asigna de nuevo el día'; end if;
   if new.employee_id is not null and not exists (select 1 from public.employees e where e.id = new.employee_id and e.company_id = new.company_id) then
@@ -34,7 +42,9 @@ begin
   end if;
   if not app.is_backoffice() then new.created_by := auth.uid(); end if;
   return new;
-end $$;
+end $body$$fn$;
+  end if;
+end $outer$;
 drop trigger if exists trg_guard_wl on public.warmup_leaders;
 create trigger trg_guard_wl before insert or update or delete on public.warmup_leaders for each row execute function app.guard_warmup_leader();
 drop trigger if exists aud_wl on public.warmup_leaders;
