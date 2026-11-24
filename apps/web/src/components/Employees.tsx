@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth';
 import { formatMXN, pesosToCents } from '../lib/money';
 import WorkSchedulePanel from './WorkSchedule';
 import { ImportEmployees, exportEmployees } from './EmployeesIO';
+import { effectiveFor, type Schedule } from './Companies';
 
 type EState = 'activo' | 'suspendido' | 'baja';
 interface Dept { id: string; company_id: string; name: string; is_active: boolean }
@@ -32,6 +33,10 @@ export default function Employees() {
   const [editing, setEditing] = useState<Emp | 'new' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [scheds, setScheds] = useState<Schedule[]>([]);
+  const [fNom, setFNom] = useState('');
+  const todayIso = new Date().toLocaleDateString('en-CA');
+  const nominaOf = (r: Emp) => effectiveFor(scheds.filter(x => x.company_id === r.company_id), { id: r.id, department_id: r.department_id, group_id: r.group_id }, todayIso);
 
   const load = useCallback(async () => {
     setError(null);
@@ -42,13 +47,15 @@ export default function Employees() {
     if (fState) query = query.eq('state', fState);
     if (fHead) query = query.eq('is_head_coach', true);
     if (q.trim()) query = query.ilike('full_name', `%${q.trim()}%`);
-    const [e, d, g] = await Promise.all([
+    const [e, d, g, ps] = await Promise.all([
       query,
       supabase.from('departments').select('id,company_id,name,is_active').order('name'),
       supabase.from('groups').select('id,company_id,department_id,name,is_active').order('name'),
+      supabase.from('pay_schedules').select('*'),
     ]);
     if (e.error) setError(e.error.message);
     setRows((e.data as Emp[]) ?? []); setDepts((d.data as Dept[]) ?? []); setGroups((g.data as Group[]) ?? []);
+    setScheds((ps.data as Schedule[]) ?? []);
   }, [companyId, fDept, fGroup, fState, fHead, q]);
 
   useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
@@ -89,23 +96,27 @@ export default function Employees() {
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-100 text-xs uppercase text-slate-500">
             <tr><th className="px-3 py-2">Nombre</th><th className="px-3 py-2">Empresa</th><th className="px-3 py-2">Departamento</th>
-              <th className="px-3 py-2">Grupo</th><th className="px-3 py-2">Puesto</th><th className="px-3 py-2">Estado</th></tr>
+              <th className="px-3 py-2">Grupo</th><th className="px-3 py-2">Puesto</th>
+              <th className="px-3 py-2"><select className="rounded border bg-transparent px-1 text-xs uppercase" value={fNom} onClick={e => e.stopPropagation()} onChange={e => setFNom(e.target.value)}>
+                <option value="">Nómina</option><option value="quincenal">Quincenal</option><option value="semanal">Semanal</option><option value="mensual">Mensual</option><option value="sin">Sin calendario</option></select></th>
+              <th className="px-3 py-2">Estado</th></tr>
           </thead>
           <tbody>
-            {rows.map(r => (
+            {rows.filter(r => !fNom || (nominaOf(r)?.frequency ?? 'sin') === fNom).map(r => (
               <tr key={r.id} onClick={() => setEditing(r)} className="cursor-pointer border-t hover:bg-slate-50">
                 <td className="px-3 py-2 font-medium">{r.full_name}{r.is_head_coach && <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700">Head Coach</span>}</td><td className="px-3 py-2">{companyName(r.company_id)}</td>
                 <td className="px-3 py-2">{deptName(r.department_id)}</td><td className="px-3 py-2">{groupName(r.group_id)}</td>
                 <td className="px-3 py-2">{r.job_title ?? '—'}</td>
+                <td className="px-3 py-2"><NominaBadge s={nominaOf(r)} /></td>
                 <td className="px-3 py-2"><span className={`rounded-full px-2 py-0.5 text-xs ${badge[r.state]}`}>{r.state}</span></td>
               </tr>))}
-            {rows.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">Sin empleados con estos filtros.</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">Sin empleados con estos filtros.</td></tr>}
           </tbody>
         </table>
       </div>
       {editing && (() => {
         const idx = editing === 'new' ? -1 : rows.findIndex(r => r.id === editing.id);
-        return <EmployeeForm key={editing === 'new' ? 'new' : editing.id} emp={editing === 'new' ? null : editing} depts={depts} groups={groups}
+        return <EmployeeForm key={editing === 'new' ? 'new' : editing.id} emp={editing === 'new' ? null : editing} depts={depts} groups={groups} scheds={scheds}
           position={idx >= 0 ? `${idx + 1} de ${rows.length}` : undefined}
           onPrev={idx > 0 ? () => setEditing(rows[idx - 1]) : undefined}
           onNext={idx >= 0 && idx < rows.length - 1 ? () => setEditing(rows[idx + 1]) : undefined}
@@ -115,8 +126,8 @@ export default function Employees() {
   );
 }
 
-function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged, onPrev, onNext, position }:
-  { emp: Emp | null; depts: Dept[]; groups: Group[]; onClose: () => void; onSaved: () => void; onChanged: () => void;
+function EmployeeForm({ emp, depts, groups, scheds, onClose, onSaved, onChanged, onPrev, onNext, position }:
+  { emp: Emp | null; depts: Dept[]; groups: Group[]; scheds: Schedule[]; onClose: () => void; onSaved: () => void; onChanged: () => void;
     onPrev?: () => void; onNext?: () => void; position?: string }) {
   const { companies, companyId, can, user } = useAuth();
   // Quien no tiene permiso de editar expedientes y llega aquí es Head Coach: solo grupo, puesto, contacto y días.
@@ -247,6 +258,7 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged, onPrev,
           </div>
         </form>
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
+        {emp && <NominaPanel emp={emp} scheds={scheds} onChanged={onChanged} />}
         {emp && can('payroll_hours') && <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
         {emp && can('payroll') && <LoansPanel emp={emp} />}
@@ -594,6 +606,59 @@ function LoansPanel({ emp }: { emp: Emp }) {
             </div>
           </div>);
       })}
+    </div>
+  );
+}
+
+const FREQ: Record<string, { label: string; cls: string }> = {
+  quincenal: { label: 'Quincenal', cls: 'bg-blue-100 text-blue-700' }, semanal: { label: 'Semanal', cls: 'bg-emerald-100 text-emerald-700' },
+  mensual: { label: 'Mensual', cls: 'bg-purple-100 text-purple-700' } };
+function NominaBadge({ s }: { s: Schedule | undefined }) {
+  if (!s) return <span className="text-xs text-red-600">sin calendario</span>;
+  return <span className={`rounded-full px-2 py-0.5 text-xs ${FREQ[s.frequency]?.cls ?? ''}`}>{FREQ[s.frequency]?.label ?? s.frequency}{s.scope === 'empleado' ? '' : ''}</span>;
+}
+
+/** En qué nómina está la persona y cambiarla (crea su calendario individual con vigencia). */
+function NominaPanel({ emp, scheds, onChanged }: { emp: Emp; scheds: Schedule[]; onChanged: () => void }) {
+  const { can } = useAuth();
+  const today = new Date().toLocaleDateString('en-CA');
+  const mine = scheds.filter(x => x.company_id === emp.company_id);
+  const cur = effectiveFor(mine, { id: emp.id, department_id: emp.department_id, group_id: emp.group_id }, today);
+  const [open, setOpen] = useState(false); const [freq, setFreq] = useState(cur?.frequency ?? 'quincenal');
+  const [weekday, setWeekday] = useState(6); const [from, setFrom] = useState(today); const [msg, setMsg] = useState<string | null>(null);
+  const WDN = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const where = !cur ? '' : cur.scope === 'empleado' ? 'individual' : cur.scope === 'empresa' ? 'el de toda la sucursal' : `el de su ${cur.scope}`;
+  const detail = !cur ? '' : cur.frequency === 'semanal' ? `cada ${WDN[cur.weekly_weekday ?? 6]}`
+    : cur.frequency === 'quincenal' ? `días ${cur.biweekly_day_1} y ${cur.biweekly_day_2 === 31 ? 'último' : cur.biweekly_day_2}` : `día ${cur.monthly_day === 31 ? 'último' : cur.monthly_day}`;
+
+  async function save() {
+    setMsg(null);
+    const general = mine.find(x => x.scope === 'empresa' && x.frequency === 'quincenal' && !x.cancelled_at);
+    const cfg = freq === 'semanal' ? { frequency: 'semanal', weekly_weekday: weekday, weekend_rule: 'antes', cutoff: 'dia_de_pago' }
+      : freq === 'mensual' ? { frequency: 'mensual', monthly_day: 31, weekend_rule: 'antes', cutoff: 'dia_de_pago' }
+      : { frequency: 'quincenal', biweekly_day_1: general?.biweekly_day_1 ?? 15, biweekly_day_2: general?.biweekly_day_2 ?? 31,
+          weekend_rule: general?.weekend_rule ?? 'antes', cutoff: general?.cutoff ?? 'dia_anterior' };
+    const { error } = await supabase.from('pay_schedules').insert({ company_id: emp.company_id, scope: 'empleado', employee_id: emp.id, ...cfg,
+      effective_from: from, reason: `Cambio a nómina ${FREQ[freq].label.toLowerCase()}` });
+    if (error) return setMsg(error.message);
+    setOpen(false); onChanged();
+  }
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <div className="flex items-center gap-2"><h4 className="text-sm font-semibold">Nómina</h4>
+        <NominaBadge s={cur} />{cur && <span className="text-xs text-slate-500">{detail} · calendario {where}</span>}
+        {can('pay_schedules', 'configure') && <button className="ml-auto text-sm text-brand" onClick={() => setOpen(!open)}>Cambiar</button>}</div>
+      {open && (
+        <div className="flex flex-wrap items-end gap-2 rounded-lg border p-3 text-sm">
+          <label className="text-xs">Nómina<select className={field} value={freq} onChange={e => setFreq(e.target.value as typeof freq)}>
+            <option value="quincenal">Quincenal</option><option value="semanal">Semanal</option><option value="mensual">Mensual</option></select></label>
+          {freq === 'semanal' && <label className="text-xs">Día de pago<select className={field} value={weekday} onChange={e => setWeekday(+e.target.value)}>
+            {WDN.map((d, i) => <option key={i} value={i}>{d}</option>)}</select></label>}
+          <label className="text-xs">Desde<input type="date" className={field} value={from} onChange={e => setFrom(e.target.value)} /></label>
+          <button className="rounded-lg border border-brand px-3 py-2 text-brand" onClick={save}>Guardar</button>
+          <p className="w-full text-xs text-slate-500">Quincenal toma los días de pago de la sucursal. Puede empezar en fecha pasada si aún no hay nóminas autorizadas en esas fechas.</p>
+        </div>)}
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
     </div>
   );
 }
