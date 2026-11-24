@@ -543,9 +543,31 @@ begin
   if (select warmups_per_day from public.companies where id = vin) <> 2 then raise exception 'Viñedos no tiene 2'; end if;
   perform set_config('request.jwt.claim.sub', dir::text, true);
   set local role authenticated;
-  insert into public.warmup_leaders (company_id, date, slot) values (vin, '2026-11-24', 2);
+  insert into public.warmup_leaders (company_id, date, slot, mode) values (vin, '2026-11-24', 2, 'sin_asignar');
   ok := false; begin insert into public.warmup_leaders (company_id, date, slot) values (car, '2026-11-24', 2); exception when others then ok := true; end;
   if not ok then raise exception 'CAR aceptó 2 calentamientos'; end if;
   reset role;
   raise notice 'OK: calentamientos por día por sucursal';
+end $$;
+
+-- 0026: rotación de calentamiento (2 × 2 en Viñedos)
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        coach_vin uuid := (select id from public.departments where company_id = vin and name = 'Coach');
+        g uuid; ok boolean;
+begin
+  if (select count(*) from public.warmup_rotation where company_id = vin) <> 16 then raise exception 'rotación inicial'; end if;
+  insert into public.employees (company_id, full_name, department_id) values (vin, 'Giomari Prueba', coach_vin) returning id into g;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.warmup_rotation (company_id, weekday, slot, position, employee_id) values (vin, 1, 2, 2, g);
+  ok := false; begin insert into public.warmup_rotation (company_id, weekday, slot, position) values (vin, 1, 2, 3); exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó 3er maestro'; end if;
+  ok := false; begin insert into public.warmup_leaders (company_id, date, slot, position, mode, employee_id) values (car, '2026-11-24', 1, 2, 'asignado', null); exception when others then ok := true; end;
+  if not ok then raise exception 'CAR aceptó 2 maestros'; end if;
+  insert into public.warmup_leaders (company_id, date, slot, position, mode) values (vin, '2026-11-23', 1, 1, 'rotacion');
+  reset role;
+  raise notice 'OK: rotación de calentamiento';
 end $$;

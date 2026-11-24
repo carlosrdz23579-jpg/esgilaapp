@@ -74,15 +74,18 @@ function useCoaches(companyId: string) {
   return coaches;
 }
 
+interface Slot { label: string; teachers: number }
+interface Lead { slot: number; label: string; employeeId: string | null; fromRotation: boolean }
+
 function Calendar({ companyId }: { companyId: string }) {
   const { can } = useAuth();
   const [month, setMonth] = usePersisted('coaches:mes', todayMx().slice(0, 7));
   const coaches = useCoaches(companyId);
-  // Clave 'día|n' (n = calentamiento 1, 2…). Viñedos tiene 2 por día; CAR, 1.
-  const [leaders, setLeaders] = useState<Record<string, string | null>>({});
-  const [slots, setSlots] = useState(1);
+  const [slots, setSlots] = useState<Slot[]>([{ label: 'Calentamiento', teachers: 1 }]);
+  const [rotation, setRotation] = useState<Record<string, string | null>>({});
+  const [overrides, setOverrides] = useState<Record<string, { mode: string; employee_id: string | null }>>({});
   const [att, setAtt] = useState<Record<string, { arrival: string | null; uniform: boolean | null }>>({});
-  const [day, setDay] = useState<string | null>(null);
+  const [day, setDay] = useState<string | null>(null); const [rotOpen, setRotOpen] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const canLead = can('warmup', 'configure'), canAtt = can('uniform', 'edit');
 
@@ -91,14 +94,16 @@ function Calendar({ companyId }: { companyId: string }) {
     return Array.from({ length: n }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   }, [month]);
   const load = useCallback(async () => {
-    const [l, a, c] = await Promise.all([
-      supabase.from('warmup_leader_latest').select('date,slot,employee_id').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
+    const [l, a, c, r] = await Promise.all([
+      supabase.from('warmup_leader_latest').select('date,slot,position,mode,employee_id').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
       supabase.from('staff_attendance_latest').select('employee_id,date,arrival,uniform').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
-      supabase.from('companies').select('warmups_per_day').eq('id', companyId).single(),
+      supabase.from('companies').select('warmup_slots').eq('id', companyId).single(),
+      supabase.from('warmup_rotation_latest').select('weekday,slot,position,employee_id').eq('company_id', companyId),
     ]);
-    if (l.error) setMsg(l.error.message);
-    setSlots((c.data as { warmups_per_day: number } | null)?.warmups_per_day ?? 1);
-    setLeaders(Object.fromEntries(((l.data ?? []) as { date: string; slot: number; employee_id: string | null }[]).map(x => [`${x.date}|${x.slot}`, x.employee_id])));
+    const err = l.error ?? c.error ?? r.error; if (err) setMsg(err.message);
+    setSlots(((c.data as { warmup_slots: Slot[] } | null)?.warmup_slots) ?? [{ label: 'Calentamiento', teachers: 1 }]);
+    setRotation(Object.fromEntries(((r.data ?? []) as { weekday: number; slot: number; position: number; employee_id: string | null }[]).map(x => [`${x.weekday}|${x.slot}|${x.position}`, x.employee_id])));
+    setOverrides(Object.fromEntries(((l.data ?? []) as { date: string; slot: number; position: number; mode: string; employee_id: string | null }[]).map(x => [`${x.date}|${x.slot}|${x.position}`, x])));
     setAtt(Object.fromEntries(((a.data ?? []) as { employee_id: string; date: string; arrival: string | null; uniform: boolean | null }[]).map(x => [`${x.employee_id}|${x.date}`, x])));
   }, [companyId, days]);
   useEffect(() => { load(); }, [load]);
@@ -106,11 +111,23 @@ function Calendar({ companyId }: { companyId: string }) {
   const wd = (iso: string) => new Date(iso + 'T12:00:00Z').getUTCDay();
   const working = (iso: string) => coaches.filter(c => c.work_days.includes(wd(iso)));
   const name = (id: string | null | undefined) => coaches.find(c => c.id === id)?.full_name ?? '';
-  const lead = async (iso: string, slot: number, empId: string) => {
-    const { error } = await supabase.from('warmup_leaders').insert({ company_id: companyId, date: iso, slot, employee_id: empId || null });
-    if (error) setMsg(error.message); else load();
+  const first = (id: string | null | undefined) => name(id).split(' ')[0];
+  /** Quién dirige: el cambio del día si lo hay; si no, la rotación semanal. */
+  const effective = (iso: string, slot: number, pos: number): { id: string | null; rot: boolean } => {
+    const o = overrides[`${iso}|${slot}|${pos}`];
+    if (o && o.mode !== 'rotacion') return { id: o.mode === 'asignado' ? o.employee_id : null, rot: false };
+    return { id: rotation[`${wd(iso)}|${slot}|${pos}`] ?? null, rot: true };
   };
+  const leadsOf = (iso: string): Lead[] => slots.flatMap((sl, k) => Array.from({ length: sl.teachers }, (_, p) => {
+    const e = effective(iso, k + 1, p + 1); return { slot: k + 1, label: sl.label, employeeId: e.id, fromRotation: e.rot };
+  }));
+  async function setLead(iso: string, slot: number, pos: number, v: string) {
+    const row = v === '__rot' ? { mode: 'rotacion' } : v === '__none' ? { mode: 'sin_asignar' } : { mode: 'asignado', employee_id: v };
+    const { error } = await supabase.from('warmup_leaders').insert({ company_id: companyId, date: iso, slot, position: pos, ...row });
+    if (error) setMsg(error.message); else load();
+  }
   const offset = wd(days[0]);
+  const multi = slots.length > 1 || slots.some(s => s.teachers > 1);
 
   return (
     <div className="space-y-3">
@@ -118,7 +135,8 @@ function Calendar({ companyId }: { companyId: string }) {
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, -1))}>‹</button>
         <b className="w-40 text-center capitalize">{monthLabel(month)}</b>
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, 1))}>›</button>
-        <p className="ml-2 text-xs text-slate-500">🔥 dirige el calentamiento; el resto de los coaches de ese día ayuda activamente. Da clic en un día para ver quién trabaja{canAtt ? ' y registrar llegada y uniforme' : ''}.</p>
+        <p className="ml-2 text-xs text-slate-500">🔥 dirigen el calentamiento ({slots.map(s => `${s.label}: ${s.teachers} maestro(s)`).join(' · ')}); el resto ayuda activamente. Clic en un día para ver{canAtt ? ' y registrar llegada y uniforme' : ' quién trabaja'}.</p>
+        {canLead && <button className="ml-auto rounded-lg border px-3 py-1.5 text-sm" onClick={() => setRotOpen(true)}>Rotación semanal</button>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       <div className="grid grid-cols-7 gap-1 text-xs">
@@ -127,28 +145,68 @@ function Calendar({ companyId }: { companyId: string }) {
         {days.map(iso => {
           const w = working(iso); const isToday = iso === todayMx();
           const noUni = w.filter(c => att[`${c.id}|${iso}`]?.uniform === false).length;
+          const opts = [...w, ...coaches.filter(c => !w.includes(c))];
           return (
-            <div key={iso} onClick={() => setDay(iso)} className={`min-h-[5.5rem] cursor-pointer rounded-lg border bg-white p-1.5 hover:border-brand ${isToday ? 'border-brand ring-1 ring-brand' : ''} ${w.length === 0 ? 'opacity-50' : ''}`}>
-              <div className="flex justify-between"><b>{+iso.slice(8)}</b>{w.length > 0 && <span className="text-slate-400">{w.length} coach(es)</span>}</div>
-              {w.length > 0 && Array.from({ length: slots }, (_, k) => k + 1).map(n => {
-                const v = leaders[`${iso}|${n}`] ?? '';
-                return canLead
-                  ? <select key={n} onClick={e => e.stopPropagation()} className="mt-1 w-full rounded border px-1 py-0.5 text-[11px]" value={v} onChange={e => lead(iso, n, e.target.value)}>
-                      <option value="">🔥{slots > 1 ? n : ''} Sin asignar</option>{w.map(c => <option key={c.id} value={c.id}>🔥{slots > 1 ? n : ''} {c.full_name}</option>)}</select>
-                  : v && <p key={n} className="mt-1 truncate">🔥{slots > 1 ? n : ''} {name(v)}</p>;
-              })}
+            <div key={iso} onClick={() => setDay(iso)} className={`min-h-[6rem] cursor-pointer rounded-lg border bg-white p-1.5 hover:border-brand ${isToday ? 'border-brand ring-1 ring-brand' : ''} ${w.length === 0 ? 'opacity-50' : ''}`}>
+              <div className="flex justify-between"><b>{+iso.slice(8)}</b>{w.length > 0 && <span className="text-slate-400">{w.length}</span>}</div>
+              {w.length > 0 && slots.map((sl, k) => (
+                <div key={k} className="mt-1">
+                  {multi && <p className="text-[10px] font-semibold text-slate-500">🔥 {sl.label}</p>}
+                  {Array.from({ length: sl.teachers }, (_, p) => {
+                    const e = effective(iso, k + 1, p + 1); const o = overrides[`${iso}|${k + 1}|${p + 1}`];
+                    const value = !o || o.mode === 'rotacion' ? '__rot' : o.mode === 'sin_asignar' ? '__none' : o.employee_id ?? '__none';
+                    return canLead
+                      ? <select key={p} onClick={ev => ev.stopPropagation()} className={`mt-0.5 w-full rounded border px-1 py-0.5 text-[11px] ${e.rot ? '' : 'border-amber-400 bg-amber-50'}`} value={value} onChange={ev => setLead(iso, k + 1, p + 1, ev.target.value)}>
+                          <option value="__rot">{e.rot ? (first(e.id) || '— sin rotación —') : 'Según rotación'}</option>
+                          <option value="__none">— nadie este día —</option>
+                          {opts.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}</select>
+                      : <p key={p} className={`truncate ${e.rot ? '' : 'text-amber-700'}`}>{multi ? '' : '🔥 '}{first(e.id) || '—'}</p>;
+                  })}
+                </div>))}
               {noUni > 0 && <p className="mt-1 text-amber-700">{noUni} sin uniforme</p>}
             </div>);
         })}
       </div>
-      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} slots={slots} leaders={Array.from({ length: slots }, (_, k) => leaders[`${day}|${k + 1}`] ?? null)} att={att} canAtt={canAtt}
+      {canLead && <p className="text-xs text-slate-500">Lo que viene de la rotación se llena solo cada semana. Si cambias a alguien un día, se marca en ámbar; "Según rotación" lo regresa.</p>}
+      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} leads={leadsOf(day)} multi={multi} att={att} canAtt={canAtt}
         onClose={() => setDay(null)} onChanged={load} />}
+      {rotOpen && <RotationEditor companyId={companyId} slots={slots} coaches={coaches} rotation={rotation} onClose={() => setRotOpen(false)} onChanged={load} />}
     </div>
   );
 }
 
-function DayPanel({ iso, companyId, coaches, slots, leaders, att, canAtt, onClose, onChanged }:
-  { iso: string; companyId: string; coaches: Emp[]; slots: number; leaders: (string | null)[]; att: Record<string, { arrival: string | null; uniform: boolean | null }>;
+function RotationEditor({ companyId, slots, coaches, rotation, onClose, onChanged }:
+  { companyId: string; slots: Slot[]; coaches: Emp[]; rotation: Record<string, string | null>; onClose: () => void; onChanged: () => void }) {
+  const [msg, setMsg] = useState<string | null>(null);
+  const weekdays = [1, 2, 3, 4, 5, 6, 0].filter(d => coaches.some(c => c.work_days.includes(d)));
+  async function set(wdN: number, slot: number, pos: number, v: string) {
+    const { error } = await supabase.from('warmup_rotation').insert({ company_id: companyId, weekday: wdN, slot, position: pos, employee_id: v || null });
+    if (error) setMsg(error.message); else onChanged();
+  }
+  return (
+    <Modal wide title="Rotación semanal del calentamiento" onClose={onClose}>
+      <p className="text-xs text-slate-500">Se repite cada semana. Los cambios de un día concreto se hacen en el calendario.</p>
+      <div className="overflow-x-auto"><table className="w-full text-sm">
+        <thead><tr className="text-left text-xs text-slate-500"><th className="py-1">Día</th>{slots.map((s, k) => <th key={k} colSpan={s.teachers}>🔥 {s.label}</th>)}</tr></thead>
+        <tbody>{weekdays.map(d => (
+          <tr key={d} className="border-t">
+            <td className="py-1.5 font-medium">{WD[d]}</td>
+            {slots.flatMap((s, k) => Array.from({ length: s.teachers }, (_, p) => (
+              <td key={`${k}-${p}`} className="pr-2">
+                <select className="w-full rounded border px-1 py-1 text-xs" value={rotation[`${d}|${k + 1}|${p + 1}`] ?? ''} onChange={e => set(d, k + 1, p + 1, e.target.value)}>
+                  <option value="">— nadie —</option>
+                  {[...coaches.filter(c => c.work_days.includes(d)), ...coaches.filter(c => !c.work_days.includes(d))].map(c =>
+                    <option key={c.id} value={c.id}>{c.full_name}{c.work_days.includes(d) ? '' : ' (no trabaja ese día)'}</option>)}
+                </select></td>)))}
+          </tr>))}</tbody>
+      </table></div>
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+    </Modal>
+  );
+}
+
+function DayPanel({ iso, companyId, coaches, leads, multi, att, canAtt, onClose, onChanged }:
+  { iso: string; companyId: string; coaches: Emp[]; leads: Lead[]; multi: boolean; att: Record<string, { arrival: string | null; uniform: boolean | null }>;
     canAtt: boolean; onClose: () => void; onChanged: () => void }) {
   const isToday = iso === todayMx();
   const [draft, setDraft] = useState<Record<string, { arrival: string; uniform: boolean; absent: boolean }>>(() =>
@@ -173,7 +231,8 @@ function DayPanel({ iso, companyId, coaches, slots, leaders, att, canAtt, onClos
             return (
               <tr key={c.id} className="border-t">
                 <td className="py-1.5 font-medium">{c.full_name}</td>
-                <td className="text-xs">{leaders.includes(c.id) ? <b>🔥 Dirige{slots > 1 ? ` el ${leaders.indexOf(c.id) + 1}º` : ''}</b> : 'Ayuda activamente'}</td>
+                <td className="text-xs">{leads.some(l => l.employeeId === c.id)
+                  ? <b>🔥 Dirige{multi ? ` ${leads.filter(l => l.employeeId === c.id).map(l => l.label).join(' y ')}` : ''}</b> : 'Ayuda activamente'}</td>
                 {canAtt && <>
                   <td>{d.absent ? '—' : <TimeSelect allowAny from="05:00" value={d.arrival} onChange={v => set(c.id, { arrival: v })} />}</td>
                   <td className="text-center"><input type="checkbox" disabled={d.absent} checked={d.uniform} onChange={e => set(c.id, { uniform: e.target.checked })} /></td>
