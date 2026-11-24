@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
 import { Modal, TimeSelect } from './ui';
+import Warmup from './Warmup';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60';
@@ -42,7 +43,7 @@ async function upload(companyId: string, who: string, file: File): Promise<{ pat
 
 export default function CoachCalendar() {
   const { companyId, can, companies } = useAuth();
-  const [tab, setTab] = usePersisted<'calendario' | 'planeaciones' | 'revision'>('coaches:tab', 'calendario');
+  const [tab, setTab] = usePersisted<'eventos' | 'calendario' | 'calentamiento' | 'planeaciones' | 'revision'>('calendario:tab', 'eventos');
   const [me, setMe] = useState<Emp | null>(null);
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -53,13 +54,16 @@ export default function CoachCalendar() {
   }, []);
   const co = companyId !== 'all' ? companyId : me?.company_id ?? '';
   if (!co) return <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">Elige una sucursal en el selector de arriba.</p>;
-  const tabs = [['calendario', 'Calendario'], ['planeaciones', 'Planeaciones y mis apuntes'], ...(can('planning', 'view') ? [['revision', 'Revisión de maestros']] : [])] as const;
+  const tabs = [['eventos', 'Eventos'], ['calendario', 'Coaches'], ...(can('warmup') ? [['calentamiento', 'Calentamiento activo']] : []),
+    ['planeaciones', 'Planeaciones y mis apuntes'], ...(can('planning', 'view') ? [['revision', 'Revisión de maestros']] : [])] as const;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">{tabs.map(([k, l]) => (
         <button key={k} onClick={() => setTab(k as typeof tab)} className={`rounded-lg px-3 py-1.5 text-sm ${tab === k ? 'bg-brand text-white' : 'bg-white shadow-sm'}`}>{l}</button>))}
         <span className="ml-auto self-center text-sm text-slate-500">{companies.find(c => c.id === co)?.trade_name}</span></div>
+      {tab === 'eventos' && <Events companyId={co} />}
       {tab === 'calendario' && <Calendar companyId={co} />}
+      {tab === 'calentamiento' && <Warmup />}
       {tab === 'planeaciones' && <Plans companyId={co} me={me && me.company_id === co ? me : null} />}
       {tab === 'revision' && can('planning', 'view') && <ReviewPlans companyId={co} />}
     </div>
@@ -439,6 +443,91 @@ function ReviewPlans({ companyId }: { companyId: string }) {
             {f.kind === 'mensual' && <button className="text-xs text-brand" onClick={() => review(f)}>{f.reviewed_at ? '✓ Revisada' : 'Marcar revisada'}</button>}
             {f.note && <p className="w-full whitespace-pre-wrap text-xs text-slate-600">{f.note}</p>}
           </div>))}</div>
+      </Modal>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+const KIND: Record<string, { label: string; cls: string }> = {
+  evento: { label: 'Evento', cls: 'bg-indigo-100 text-indigo-800' }, competencia: { label: 'Competencia', cls: 'bg-rose-100 text-rose-800' },
+  junta: { label: 'Junta', cls: 'bg-amber-100 text-amber-800' }, festivo: { label: 'Día festivo / sin clases', cls: 'bg-slate-200 text-slate-700' },
+  curso: { label: 'Curso', cls: 'bg-emerald-100 text-emerald-800' }, clase_especial: { label: 'Clase especial', cls: 'bg-sky-100 text-sky-800' },
+  otro: { label: 'Otro', cls: 'bg-slate-100 text-slate-700' } };
+interface Ev { id: string; date: string; end_date: string | null; start_time: string | null; end_time: string | null; kind: string; title: string; notes: string | null; created_at: string }
+
+/** Itinerario general de la sucursal: competencias, juntas, festivos, cursos, clases especiales. */
+function Events({ companyId }: { companyId: string }) {
+  const { can } = useAuth();
+  const [month, setMonth] = usePersisted('eventos:mes', todayMx().slice(0, 7));
+  const [evs, setEvs] = useState<Ev[]>([]); const [msg, setMsg] = useState<string | null>(null);
+  const [form, setForm] = useState<Partial<Ev> | null>(null); const [open, setOpen] = useState<Ev | null>(null);
+  const canEdit = can('calendar', 'edit');
+  const first = `${month}-01`, last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).toISOString().slice(0, 10);
+  const load = useCallback(async () => {
+    const { data, error } = await supabase.from('calendar_events').select('id,date,end_date,start_time,end_time,kind,title,notes,created_at')
+      .eq('company_id', companyId).is('cancelled_at', null).lte('date', last).or(`end_date.gte.${first},and(end_date.is.null,date.gte.${first})`).order('date');
+    if (error) setMsg(error.message); else setEvs((data as Ev[]) ?? []);
+  }, [companyId, first, last]);
+  useEffect(() => { load(); }, [load]);
+  const days = Array.from({ length: +last.slice(8) }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const on = (iso: string) => evs.filter(e => e.date <= iso && (e.end_date ?? e.date) >= iso);
+  const offset = new Date(first + 'T12:00:00Z').getUTCDay();
+
+  async function save() {
+    if (!form?.title?.trim() || !form.date) return setMsg('Falta título y fecha.');
+    if (form.start_time && form.end_time && form.end_time <= form.start_time) return setMsg('La hora de fin debe ser después del inicio.');
+    const { error } = await supabase.from('calendar_events').insert({ company_id: companyId, date: form.date, end_date: form.end_date || null,
+      start_time: form.start_time || null, end_time: form.end_time || null, kind: form.kind ?? 'evento', title: form.title.trim(), notes: form.notes?.trim() || null });
+    if (error) return setMsg(error.message);
+    setForm(null); setMsg(null); load();
+  }
+  async function cancel(e: Ev) {
+    if (!window.confirm(`¿Cancelar "${e.title}"?`)) return;
+    const { error } = await supabase.from('calendar_events').update({ cancelled_at: new Date().toISOString() }).eq('id', e.id);
+    if (error) setMsg(error.message); else { setOpen(null); load(); }
+  }
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 shadow-sm">
+        <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, -1))}>‹</button>
+        <b className="w-40 text-center capitalize">{monthLabel(month)}</b>
+        <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, 1))}>›</button>
+        <span className="flex flex-wrap gap-1 text-[11px]">{Object.entries(KIND).map(([k, v]) => <span key={k} className={`rounded px-1.5 ${v.cls}`}>{v.label}</span>)}</span>
+        {canEdit && <button className={`${btn} ml-auto`} onClick={() => setForm({ date: todayMx(), kind: 'evento' })}>+ Evento</button>}
+      </div>
+      {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+      <div className="grid grid-cols-7 gap-1 text-xs">
+        {WD.map(d => <div key={d} className="py-1 text-center font-semibold text-slate-500">{d}</div>)}
+        {Array.from({ length: offset }, (_, i) => <div key={'x' + i} />)}
+        {days.map(iso => (
+          <div key={iso} onDoubleClick={() => canEdit && setForm({ date: iso, kind: 'evento' })}
+            className={`min-h-[5.5rem] rounded-lg border bg-white p-1.5 ${iso === todayMx() ? 'border-brand ring-1 ring-brand' : ''}`}>
+            <b>{+iso.slice(8)}</b>
+            {on(iso).map(e => <button key={e.id} onClick={() => setOpen(e)} className={`mt-0.5 block w-full truncate rounded px-1 text-left ${KIND[e.kind]?.cls ?? ''}`}>
+              {e.start_time ? `${e.start_time} ` : ''}{e.title}</button>)}
+          </div>))}
+      </div>
+      {canEdit && <p className="text-xs text-slate-500">Doble clic en un día para agregar un evento ahí.</p>}
+      {form && <Modal title="Nuevo evento" onClose={() => setForm(null)}>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="text-xs sm:col-span-2">Título<input autoFocus className={`${field} w-full`} value={form.title ?? ''} onChange={e => setForm({ ...form, title: e.target.value })} /></label>
+          <label className="text-xs">Tipo<select className={`${field} w-full`} value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}>
+            {Object.entries(KIND).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>
+          <span />
+          <label className="text-xs">Fecha<input type="date" className={`${field} w-full`} value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></label>
+          <label className="text-xs">Hasta (si dura varios días)<input type="date" min={form.date} className={`${field} w-full`} value={form.end_date ?? ''} onChange={e => setForm({ ...form, end_date: e.target.value })} /></label>
+          <label className="text-xs">Desde las<TimeSelect allowAny className={`${field} w-full`} value={form.start_time ?? ''} onChange={v => setForm({ ...form, start_time: v })} /></label>
+          <label className="text-xs">Hasta las<TimeSelect allowAny className={`${field} w-full`} value={form.end_time ?? ''} onChange={v => setForm({ ...form, end_time: v })} /></label>
+          <label className="text-xs sm:col-span-2">Notas / itinerario<textarea rows={4} className={`${field} w-full`} value={form.notes ?? ''} onChange={e => setForm({ ...form, notes: e.target.value })} /></label>
+        </div>
+        <div className="flex gap-2"><button className={btn} onClick={save}>Guardar</button><button className="text-sm" onClick={() => setForm(null)}>Cancelar</button></div>
+      </Modal>}
+      {open && <Modal title={open.title} onClose={() => setOpen(null)}>
+        <p className="text-sm"><span className={`rounded px-1.5 text-xs ${KIND[open.kind]?.cls}`}>{KIND[open.kind]?.label}</span>{' '}
+          {open.date}{open.end_date && open.end_date !== open.date ? ` al ${open.end_date}` : ''}{open.start_time ? ` · ${open.start_time}${open.end_time ? `–${open.end_time}` : ''}` : ''}</p>
+        {open.notes && <p className="whitespace-pre-wrap text-sm">{open.notes}</p>}
+        {canEdit && <button className="text-sm text-red-700" onClick={() => cancel(open)}>Cancelar evento</button>}
       </Modal>}
     </div>
   );

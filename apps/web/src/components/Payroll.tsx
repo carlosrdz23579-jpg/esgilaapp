@@ -8,6 +8,7 @@ import { periodsBetween } from '@domain/pay-calendar';
 import { computePeriodLine, recomputeLine, type PeriodLine } from '@domain/period-payroll';
 import { usePersisted } from '../lib/usePersisted';
 import { Modal, HALF_HOURS } from './ui';
+import { Weekly } from './PayrollWeekly';
 import type { Concept } from '@domain/concepts';
 import type { Deduction } from '@domain/deductions';
 import { loanLinesForPeriod, type Loan, type LoanSkip } from '@domain/loans';
@@ -25,7 +26,9 @@ interface Run { id: string; company_id: string; period_start: string; period_end
 interface Line { employee_id: string; pay_date: string; gross_cents: number; deduction_cents: number; net_cents: number; reported_cents: number | null; detail: Detail }
 interface Version { version: number; note: string; restored_from: number | null; created_at: string; created_by: string }
 interface Conf { employee_id: string; version: number; decision: 'confirmada' | 'observacion'; comment: string | null; created_at: string }
-interface PeriodOpt { start: string; end: string; nominal: string; emps: { emp: EmpLite; payDate: string }[] }
+type Freq = 'quincenal' | 'semanal' | 'mensual';
+interface PeriodOpt { start: string; end: string; nominal: string; freq: Freq; emps: { emp: EmpLite; payDate: string }[] }
+const FREQ_LABEL: Record<Freq, string> = { quincenal: 'Quincenal', semanal: 'Semanal', mensual: 'Mensual' };
 
 export default function Payroll() {
   const { can, companyId } = useAuth();
@@ -61,25 +64,39 @@ function PayrollAdmin({ companyId }: { companyId: string }) {
   useEffect(() => { loadBase(); }, [loadBase]);
 
   // Periodos recientes según el calendario de cada persona (semanal, quincenal…).
-  const periods = useMemo(() => {
+  const [freq, setFreq] = usePersisted<Freq>(`nomina:frecuencia:${companyId}`, 'quincenal');
+  const [toWeekly, setToWeekly] = useState(false);
+  // Periodos según el calendario de cada persona; las semanales muestran las últimas 12 semanas.
+  const allPeriods = useMemo(() => {
     const t = new Date().toLocaleDateString('en-CA'); const map = new Map<string, PeriodOpt>();
     for (const emp of emps) {
       const sch = effectiveFor(scheds, { id: emp.id, department_id: emp.department_id ?? '', group_id: emp.group_id ?? null }, t);
       if (!sch) continue;
-      for (const p of periodsBetween(toConfig(sch, emp.work_days), addDays(t, -50), addDays(t, 20))) {
+      const back = sch.frequency === 'semanal' ? 84 : sch.frequency === 'mensual' ? 120 : 50;
+      for (const p of periodsBetween(toConfig(sch, emp.work_days), addDays(t, -back), addDays(t, 20))) {
         const k = `${p.start}|${p.end}`;
-        const o = map.get(k) ?? { start: p.start, end: p.end, nominal: p.nominal, emps: [] };
+        // Solo si ese calendario ya estaba vigente en el periodo.
+        if (effectiveFor(scheds, { id: emp.id, department_id: emp.department_id ?? '', group_id: emp.group_id ?? null }, p.end)?.id !== sch.id) continue;
+        const o = map.get(k) ?? { start: p.start, end: p.end, nominal: p.nominal, freq: sch.frequency as Freq, emps: [] };
         o.emps.push({ emp, payDate: p.payDate }); map.set(k, o);
       }
     }
     return [...map.values()].sort((a, b) => b.nominal.localeCompare(a.nominal));
   }, [emps, scheds]);
+  const periods = allPeriods.filter(p => p.freq === freq);
+  const counts = (['quincenal', 'semanal', 'mensual'] as Freq[]).map(f => [f, new Set(allPeriods.filter(p => p.freq === f).flatMap(p => p.emps.map(e => e.emp.id))).size] as const);
 
   const selected = periods.find(p => `${p.start}|${p.end}` === sel) ?? null;
   const run = selected ? runs.find(r => r.period_start === selected.start && r.period_end === selected.end) ?? null : null;
 
   return (
     <section className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {counts.filter(([f, n]) => n > 0 || f !== 'mensual').map(([f, n]) => (
+          <button key={f} onClick={() => setFreq(f)} className={`rounded-lg px-3 py-1.5 text-sm ${freq === f ? 'bg-brand text-white' : 'bg-white shadow-sm'}`}>{FREQ_LABEL[f]} <span className="opacity-70">({n})</span></button>))}
+        {can('pay_schedules', 'configure') && <button className="ml-auto rounded-lg border px-3 py-1.5 text-sm" onClick={() => setToWeekly(true)}>Pasar personas a nómina semanal</button>}
+      </div>
+      {toWeekly && <Weekly companyId={companyId} emps={emps} scheds={scheds} onClose={() => setToWeekly(false)} onDone={() => { setToWeekly(false); setFreq('semanal'); loadBase(); }} />}
       <div className="flex flex-wrap items-end gap-3 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Periodo
           <select className="block rounded-lg border border-slate-300 px-2 py-1.5 text-sm" value={sel} onChange={e => setSel(e.target.value)}>
@@ -90,7 +107,7 @@ function PayrollAdmin({ companyId }: { companyId: string }) {
                 Pago {fdate(p.nominal)} · trabajo {p.start.slice(8)}/{p.start.slice(5, 7)}–{p.end.slice(8)}/{p.end.slice(5, 7)} · {p.emps.length} persona(s){r ? ` · ${STATUS[r.status]}` : ''}</option>;
             })}
           </select></label>
-        {periods.length === 0 && <span className="text-sm text-slate-500">No hay periodos: revisa que la sucursal tenga calendario de pago.</span>}
+        {periods.length === 0 && <span className="text-sm text-slate-500">{freq === 'semanal' ? 'Nadie tiene nómina semanal. Usa "Pasar personas a nómina semanal".' : 'No hay periodos: revisa que la sucursal tenga calendario de pago.'}</span>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       {selected && <RunPanel key={sel} companyId={companyId} period={selected} run={run} onChanged={loadBase}
@@ -135,6 +152,11 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
       const coachDepts = new Set(((await supabase.from('departments').select('id,name').eq('company_id', companyId)).data as { id: string; name: string }[] ?? [])
         .filter(d => d.name.trim().toLowerCase() === 'coach').map(d => d.id));
       const cfg = (await supabase.from('companies').select('late_deduction_bps,warmup_deduction_min').eq('id', companyId).single()).data as { late_deduction_bps: number; warmup_deduction_min: number } | null;
+      // Días después del último reporte del checador: se pagan según horario (Proyectado) hasta subir el reporte.
+      const li = await supabase.from('checker_imports').select('to_date').eq('company_id', companyId).order('to_date', { ascending: false }).limit(1);
+      const lastData = ((li.data ?? []) as { to_date: string }[])[0]?.to_date ?? addDays(period.start, -1);
+      const isProj = (d: { date: string; scheduledMinutes: number }) => d.date > lastData && d.scheduledMinutes > 0;
+      const projDays = period.end > lastData ? Math.round((Date.parse(period.end) - Date.parse(lastData)) / 864e5) : 0;
       const noWarm = new Set(((wu.data ?? []) as { employee_id: string; date: string; active: boolean }[]).filter(w => !w.active).map(w => `${w.employee_id}|${w.date}`));
       type LoanRow = { id: string; employee_id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string; status: Loan['status'] };
       const loanRows = (ln.data as LoanRow[]) ?? [];
@@ -146,9 +168,9 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
       if (lp.error || ls.error) throw (lp.error ?? ls.error)!;
       const paid = (id: string) => ((lp.data ?? []) as { loan_id: string; amount_cents: number }[]).filter(p => p.loan_id === id).reduce((n, p) => n + BigInt(p.amount_cents), 0n);
       const skips: LoanSkip[] = ((ls.data ?? []) as { loan_id: string; skip_date: string; status: LoanSkip['status'] }[]).map(s => ({ loanId: s.loan_id, date: s.skip_date, status: s.status }));
-      const pending = att.reduce((n, a) => n + (a.hasSchedule ? a.days.reduce((m, d) => m + d.pending.length, 0) : 0), 0);
+      const pending = att.reduce((n, a) => n + (a.hasSchedule ? a.days.filter(d => !isProj(d)).reduce((m, d) => m + d.pending.length, 0) : 0), 0);
       const noSched = att.filter(a => !a.hasSchedule).map(a => a.emp.full_name);
-      if ((pending || noSched.length) && !window.confirm(`Antes de calcular:\n${pending ? `• ${pending} excepción(es) de asistencia sin revisar\n` : ''}${noSched.length ? `• Sin horario base: ${noSched.join(', ')}\n` : ''}\nLo pendiente se calcula como está (faltas sin justificar, extras sin pagar). ¿Calcular de todos modos?`)) { setBusy(false); return; }
+      if ((pending || noSched.length || projDays) && !window.confirm(`Antes de calcular:\n${projDays ? `• El checador llega hasta el ${fdate(lastData)}: los ${projDays} día(s) siguientes se pagan según su horario (Proyectado). Recalcula cuando subas el reporte.\n` : ''}${pending ? `• ${pending} excepción(es) de asistencia sin revisar\n` : ''}${noSched.length ? `• Sin horario base: ${noSched.join(', ')}\n` : ''}\nLo pendiente se calcula como está (faltas sin justificar, extras sin pagar). ¿Calcular de todos modos?`)) { setBusy(false); return; }
 
       type CC = { employee_id: string; concept_key: string; label: string; kind: Concept['kind']; amount_cents: number; weekdays: number[]; active: boolean };
       type Adj = { id: string; employee_id: string; label: string; amount_cents: number; kind: 'unico' | 'recurrente'; start_date: string; end_date: string | null; status: Deduction['status'] };
@@ -163,8 +185,10 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         const line = computePeriodLine({
           period: { start: period.start, end: period.end }, payDate, lateDeductionBps: cfg?.late_deduction_bps ?? 2500, warmupDeductionMin: cfg?.warmup_deduction_min ?? 30, concepts,
           warmupApplies: coachDepts.has(emp.department_id ?? ''),
-          days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
-            late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) })),
+          days: a.days.map(d => isProj(d)
+            ? { date: d.date, paidMinutes: d.scheduledMinutes, attended: true, excused: false, late: false, scheduled: true, projected: true, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) }
+            : { date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
+                late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) }),
           extras: (xe.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           deductions: (dd.data as Adj[]).filter(x => x.employee_id === emp.id).map(toDed),
           loanLines: loanLinesForPeriod(loanRows.filter(l => l.employee_id === emp.id).map(l => ({
@@ -172,7 +196,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
             totalCents: BigInt(l.principal_cents) + BigInt(l.interest_cents), paidCents: paid(l.id), installmentCents: BigInt(l.installment_cents),
             startDate: l.start_date, status: l.status })), skips, { start: period.start, end: period.end }),
         });
-        if (a.days.some(d => d.pending.length) || !a.hasSchedule) line.detail.warnings.push('Tenía asistencia sin revisar al calcular.');
+        if (a.days.some(d => !isProj(d) && d.pending.length) || !a.hasSchedule) line.detail.warnings.push('Tenía asistencia sin revisar al calcular.');
         return { employee_id: emp.id, pay_date: line.payDate, gross_cents: line.grossCents.toString(), deduction_cents: line.deductionCents.toString(),
           net_cents: line.netCents.toString(), reported_cents: line.reportedCents.toString(), detail: line.detail };
       });
@@ -330,7 +354,7 @@ function LineDetail({ line }: { line: Line }) {
               <tr key={x.date} className="border-t bg-white">
                 <td className="px-2 py-1">{fdate(x.date)}</td>
                 <td className="px-2 py-1 text-right">{(x.minutes / 60).toFixed(2)}</td>
-                <td className={`px-2 py-1 ${x.status === 'Falta' ? 'text-red-700' : x.status === 'Tarde' ? 'text-amber-700' : 'text-slate-500'}`}>{x.status || '—'}{x.warmupInactive && <span className="ml-1 text-amber-700">· sin calentamiento</span>}</td>
+                <td className={`px-2 py-1 ${x.status === 'Falta' ? 'text-red-700' : x.status === 'Tarde' ? 'text-amber-700' : x.status === 'Proyectado' ? 'text-blue-700' : 'text-slate-500'}`}>{x.status || '—'}{x.warmupInactive && <span className="ml-1 text-amber-700">· sin calentamiento</span>}</td>
               </tr>))}
           </tbody>
         </table>
@@ -446,14 +470,18 @@ function LineEditor({ line, period, onCancel, onSave, busy }:
           <tbody>{days.map((x, i) => (
             <tr key={x.date} className="border-t">
               <td className="px-2 py-1">{fdate(x.date)}</td>
-              <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.minutes} onChange={e => set(i, { minutes: +e.target.value })}>
+              <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.minutes} onChange={e => { const m = +e.target.value;
+                set(i, { minutes: m, ...(m > 0 && x.status === 'Falta' ? { status: '' as const } : {}) }); }}>
                 {[...new Set([...HALF_HOURS, x.minutes])].sort((a, b) => a - b).map(m => <option key={m} value={m}>{(m / 60).toFixed(2)}</option>)}</select></td>
-              <td className="px-2 py-1"><select className="rounded border px-1 py-0.5" value={x.status} onChange={e => set(i, { status: e.target.value as typeof x.status })}>
-                <option value="">—</option><option value="Tarde">Tarde</option><option value="Falta">Falta</option><option value="Justificada">Justificada</option></select></td>
+              <td className="px-2 py-1"><select className={`rounded border px-1 py-0.5 ${x.status === 'Proyectado' ? 'bg-blue-50' : ''}`} value={x.status} onChange={e => {
+                const st = e.target.value as typeof x.status; set(i, { status: st, ...(st === 'Falta' || st === 'Justificada' ? { minutes: 0 } : {}) }); }}>
+                <option value="">Asistió</option><option value="Tarde">Tarde</option><option value="Falta">Falta</option><option value="Justificada">Justificada</option><option value="Proyectado">Proyectado (sin checador)</option></select></td>
               <td className="px-2 py-1 text-center">{d.inputs.warmupApplies !== false
                 ? <input type="checkbox" checked={!x.warmupInactive} onChange={e => set(i, { warmupInactive: !e.target.checked })} title="Trabajó activamente en el calentamiento" />
                 : <span className="text-slate-300" title="Solo aplica a coaches">—</span>}</td>
             </tr>))}</tbody>
+          <tfoot><tr className="border-t font-semibold"><td className="px-2 py-1">Total</td><td className="px-2 py-1">{(days.reduce((n, x) => n + x.minutes, 0) / 60).toFixed(2)} h</td>
+            <td className="px-2 py-1 text-xs font-normal text-slate-500" colSpan={2}>{days.filter(x => x.status === 'Falta').length} falta(s) · {days.filter(x => x.status === 'Tarde').length} retardo(s)</td></tr></tfoot>
         </table>
         <div className="space-y-2 text-sm">
           <p className="font-medium">Ajustes a mano</p>

@@ -76,3 +76,15 @@ test('descuento de calentamiento configurable (45 min)', () => {
   const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [], warmupDeductionMin: 45 });
   assert.equal(l.detail.warmup?.total, '7500');
 });
+
+test('días sin reporte del checador se pagan según horario (Proyectado) y se pueden recalcular', () => {
+  const d2: PeriodDay[] = [
+    { date: '2026-11-12', paidMinutes: 180, attended: true, late: false, scheduled: true },
+    { date: '2026-11-14', paidMinutes: 240, attended: true, late: false, scheduled: true, projected: true }];
+  const l = computePeriodLine({ period, payDate: '2026-11-14', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [] });
+  assert.equal(l.grossCents, 70000n);
+  assert.deepEqual(l.detail.days.map(x => x.status), ['', 'Proyectado']);
+  assert.ok(l.detail.warnings.some(w => w.includes('sin reporte')));
+  const r = recomputeLine(l.detail, period, '2026-11-14', l.detail.days, []);
+  assert.equal(r.grossCents, 70000n);
+});

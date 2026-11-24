@@ -593,3 +593,22 @@ begin
   reset role;
   raise notice 'OK: configuración por sucursal';
 end $$;
+
+-- 0028: semanal con fecha pasada y eventos
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        e uuid := (select id from public.employees where company_id = vin limit 1); ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.pay_schedules (company_id, scope, employee_id, frequency, weekly_weekday, weekend_rule, cutoff, effective_from, reason)
+    values (vin, 'empleado', e, 'semanal', 6, 'antes', 'dia_de_pago', app.today_mx() - 60, 'sueldo fijo semanal');
+  ok := false; begin insert into public.pay_schedules (company_id, scope, frequency, monthly_day, effective_from, reason)
+    values (car, 'empresa', 'mensual', 31, '2000-01-01', 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'permitió calendario antes de nómina autorizada'; end if;
+  insert into public.calendar_events (company_id, date, kind, title) values (vin, app.today_mx() + 3, 'competencia', 'Estatal');
+  reset role;
+  raise notice 'OK: semanales con fecha pasada y eventos';
+end $$;

@@ -5,8 +5,9 @@ import { conceptEarnings, hourlyRateForLate, type Concept, type WorkDay } from '
 import { deductionsForPeriod, totalDeductions, type Deduction, type Period } from './deductions.ts';
 import type { LoanLine } from './loans.ts';
 
-export interface PeriodDay extends WorkDay { late: boolean; scheduled?: boolean; warmupInactive?: boolean }
-export type DayStatus = '' | 'Tarde' | 'Falta' | 'Justificada';
+/** projected: día posterior al último reporte del checador; se paga según su horario hasta tener checadas. */
+export interface PeriodDay extends WorkDay { late: boolean; scheduled?: boolean; warmupInactive?: boolean; projected?: boolean }
+export type DayStatus = '' | 'Tarde' | 'Falta' | 'Justificada' | 'Proyectado';
 export interface PeriodInput {
   period: Period;
   payDate: string;
@@ -80,6 +81,8 @@ export function computePeriodLine(i: PeriodInput): PeriodLine {
   const deduction = lateTotal + warmTotal + totalDeductions(deds) + loans + manualMinus;
   const net = gross - deduction;
   if (net < 0n) warnings.push('El neto es negativo: revisa descuentos.');
+  const proj = i.days.filter(d => d.projected).length;
+  if (proj) warnings.push(`${proj} día(s) sin reporte del checador: se pagaron según su horario. Recalcula al subir el reporte.`);
   if (loans > 0n && loans * 10n > gross * 3n) warnings.push('El descuento por préstamos supera el 30 % de lo que gana en el periodo: revisa el límite legal (art. 110 LFT).');
 
   return {
@@ -87,7 +90,7 @@ export function computePeriodLine(i: PeriodInput): PeriodLine {
     detail: {
       days: i.days.filter(d => d.scheduled || d.attended || d.paidMinutes > 0 || d.excused).map(d => ({
         date: d.date, minutes: d.paidMinutes, scheduled: !!d.scheduled, warmupInactive: warmApplies && !!d.warmupInactive,
-        status: (d.excused ? 'Justificada' : !d.attended && d.scheduled ? 'Falta' : d.late ? 'Tarde' : '') as DayStatus })),
+        status: (d.projected ? 'Proyectado' : d.excused ? 'Justificada' : !d.attended && d.scheduled ? 'Falta' : d.late ? 'Tarde' : '') as DayStatus })),
       warmup,
       manual: manual.map(m => ({ label: m.label, amount: m.amountCents.toString() })),
       inputs: {
@@ -124,7 +127,7 @@ export function recomputeLine(prev: PeriodLine['detail'], period: Period, payDat
     concepts: prev.inputs.concepts.map(c => ({ key: c.key, label: c.label, kind: c.kind as Concept['kind'], amountCents: BigInt(c.amount), weekdays: c.weekdays })),
     days: days.map(d => ({ date: d.date, paidMinutes: d.minutes, scheduled: d.scheduled, warmupInactive: d.warmupInactive,
       attended: d.status !== 'Falta' && d.status !== 'Justificada' && (d.minutes > 0 || d.status === 'Tarde'),
-      excused: d.status === 'Justificada', late: d.status === 'Tarde' })),
+      excused: d.status === 'Justificada', late: d.status === 'Tarde', projected: d.status === 'Proyectado' })),
     extras: prev.inputs.extras.map(toDed), deductions: prev.inputs.deductions.map(toDed),
     loanLines: prev.loanLines.map(l => ({ loanId: l.loan_id, label: l.label, amountCents: BigInt(l.amount), skipped: l.skipped, balanceAfterCents: BigInt(l.balance_after) })),
   });
