@@ -493,3 +493,43 @@ begin
   reset role;
   raise notice 'OK: anular horarios';
 end $$;
+
+-- 0024: calendario de coaches
+do $$
+declare admin uuid := (select id from public.app_users where email = 'aldost228@gmail.com');   -- director
+        hc_user uuid := (select id from auth.users where email = 'hc@x.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        hc uuid := (select id from public.employees where full_name = 'HC');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        a uuid; ok boolean; n int;
+begin
+  if app.planning_deadline('2026-12-01') <> '2026-11-25' then raise exception 'límite'; end if;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.warmup_leaders (company_id, date, employee_id) values (car, '2026-11-24', hc);
+  insert into public.planning_files (company_id, kind, period_start, period_end, title, storage_path, file_name)
+    values (car, 'general', '2026-10-01', '2026-12-31', 'Trimestre 4', car || '/general/t4.pdf', 't4.pdf');
+  insert into public.staff_attendance (company_id, employee_id, date, arrival, uniform) values (car, c1, app.today_mx() - 1, '15:58', false);
+  reset role;
+  -- Como empleado (HC): ve la general, sube y oculta su apunte; no sube general; no ve apuntes de otro.
+  perform set_config('request.jwt.claim.sub', hc_user::text, true);
+  set local role authenticated;
+  if not exists (select 1 from public.planning_files where kind = 'general') then raise exception 'no ve la general'; end if;
+  insert into public.planning_files (company_id, kind, employee_id, period_start, note) values (car, 'apunte', hc, current_date, 'objetivo: rueda') returning id into a;
+  ok := false; begin insert into public.planning_files (company_id, kind, period_start, period_end, note) values (car, 'general', current_date, current_date, 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'empleado subió general'; end if;
+  ok := false; begin insert into public.planning_files (company_id, kind, employee_id, period_start, note) values (car, 'apunte', c1, current_date, 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'subió apunte de otro'; end if;
+  insert into public.planning_files (company_id, kind, employee_id, period_start, part, note) values (car, 'mensual', hc, '2020-01-01', 1, 'v1'), (car, 'mensual', hc, '2020-01-01', 1, 'v2');
+  ok := false; begin insert into public.planning_files (company_id, kind, employee_id, period_start, part, note) values (car, 'mensual', hc, '2020-01-01', 1, 'v3'); exception when others then ok := true; end;
+  if not ok then raise exception 'tercer envío'; end if;
+  perform public.hide_planning_file(a);
+  if exists (select 1 from public.planning_files where id = a) then raise exception 'sigue viendo su apunte borrado'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  if not exists (select 1 from public.planning_files where id = a and hidden_at is not null) then raise exception 'dirección no ve el borrado'; end if;
+  select count(*) into n from public.planning_status where kind = 'mensual' and late; if n <> 2 then raise exception 'tardías: %', n; end if;
+  reset role;
+  raise notice 'OK: calendario de coaches (líder de calentamiento, planeaciones, apuntes ocultos, asistencia de maestros)';
+end $$;
