@@ -477,3 +477,19 @@ begin
   reset role;
   raise notice 'OK: usuarios (varios directores, pausar propias funciones, siempre un director)';
 end $$;
+
+-- 0023: anular horarios
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        x uuid := (select id from public.employee_work_schedules where employee_id = c1 limit 1); ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin update public.employee_work_schedules set blocks = '[]' where id = x; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó un horario'; end if;
+  update public.employee_work_schedules set annulled_at = now(), annul_reason = 'fecha mal' where id = x;
+  if (select annulled_by from public.employee_work_schedules where id = x) <> admin then raise exception 'no registró'; end if;
+  reset role;
+  raise notice 'OK: anular horarios';
+end $$;

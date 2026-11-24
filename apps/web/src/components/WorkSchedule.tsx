@@ -8,7 +8,7 @@ const DAYS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', '
 const KINDS = { clase_extra: 'Clase extra', curso: 'Curso', competencia: 'Competencia', sin_actividad: 'Sin actividad (no viene)', otro: 'Otro' } as const;
 type Kind = keyof typeof KINDS;
 export interface WBlock { weekday: number; start: string; end: string }
-interface SchedRow { id: string; blocks: WBlock[]; effective_from: string; reason: string; created_at: string }
+interface SchedRow { id: string; blocks: WBlock[]; effective_from: string; reason: string; created_at: string; annulled_at: string | null; annul_reason: string | null }
 interface ExRow { id: string; date: string; kind: Kind; blocks: { start: string; end: string }[]; replaces_base: boolean; reason: string; cancelled_at: string | null }
 const today = () => new Date().toLocaleDateString('en-CA');
 
@@ -25,7 +25,7 @@ export default function WorkSchedulePanel({ employeeId, companyId, suggestion, o
 
   const load = useCallback(async () => {
     const [s, e] = await Promise.all([
-      supabase.from('employee_work_schedules').select('id,blocks,effective_from,reason,created_at').eq('employee_id', employeeId)
+      supabase.from('employee_work_schedules').select('id,blocks,effective_from,reason,created_at,annulled_at,annul_reason').eq('employee_id', employeeId)
         .order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('schedule_exceptions').select('id,date,kind,blocks,replaces_base,reason,cancelled_at').eq('employee_id', employeeId)
         .gte('date', new Date(Date.now() - 60 * 864e5).toLocaleDateString('en-CA')).order('date', { ascending: false }),
@@ -35,8 +35,19 @@ export default function WorkSchedulePanel({ employeeId, companyId, suggestion, o
   }, [employeeId]);
   useEffect(() => { load(); }, [load]);
 
-  const current = rows.find(r => r.effective_from <= today()) ?? null;
-  const upcoming = rows.filter(r => r.effective_from > today());
+  const valid = rows.filter(r => !r.annulled_at);
+  const current = valid.find(r => r.effective_from <= today()) ?? null;
+  const upcoming = valid.filter(r => r.effective_from > today());
+  const older = valid.filter(r => r !== current && r.effective_from <= today());
+
+  async function annul(r: SchedRow) {
+    const reason = window.prompt(`Borrar el horario vigente desde ${r.effective_from} (${fmt(r.blocks)}).\n\nDeja de contar para asistencia y nóminas nuevas; queda registrado como anulado.\n\nMotivo:`);
+    if (reason === null) return;
+    if (!reason.trim()) return setMsg('El motivo es obligatorio.');
+    const { data, error } = await supabase.from('employee_work_schedules').update({ annulled_at: new Date().toISOString(), annul_reason: reason.trim() }).eq('id', r.id).select('id');
+    if (error) return setMsg(error.message); if (!data?.length) return setMsg('No se aplicó: sin permiso.');
+    setMsg(null); load(); onChange?.();
+  }
 
   async function saveSchedule() {
     setMsg(null);
@@ -73,7 +84,12 @@ export default function WorkSchedulePanel({ employeeId, companyId, suggestion, o
       <div className="flex items-center"><h4 className="text-sm font-semibold">Horario</h4>
         {canEdit && !draft && <button className="ml-auto text-sm text-brand" onClick={() => setDraft(current?.blocks ?? [])}>{current ? 'Cambiar horario' : '+ Capturar horario'}</button>}</div>
       <p className="text-sm">{current ? <>{fmt(current.blocks)} <span className="text-xs text-slate-400">· desde {current.effective_from}</span></> : <span className="text-slate-500">Sin horario base: sin él no se pueden detectar retardos ni faltas.</span>}</p>
-      {upcoming.map(u => <p key={u.id} className="text-xs text-slate-500">Programado desde {u.effective_from}: {fmt(u.blocks)}</p>)}
+      {canEdit && current && <button className="text-xs text-red-700" onClick={() => annul(current)}>Borrar este horario</button>}
+      {upcoming.map(u => <p key={u.id} className="text-xs text-slate-500">Programado desde {u.effective_from}: {fmt(u.blocks)} {canEdit && <button className="ml-1 text-red-700" onClick={() => annul(u)}>Borrar</button>}</p>)}
+      {(older.length > 0 || rows.some(r => r.annulled_at)) && <details className="text-xs"><summary className="cursor-pointer text-slate-500">Horarios anteriores</summary>
+        {older.map(o => <p key={o.id} className="py-0.5">Desde {o.effective_from}: {fmt(o.blocks)} <span className="text-slate-400">· {o.reason}</span>{canEdit && <button className="ml-2 text-red-700" onClick={() => annul(o)}>Borrar</button>}</p>)}
+        {rows.filter(r => r.annulled_at).map(o => <p key={o.id} className="py-0.5 text-slate-400"><span className="line-through">Desde {o.effective_from}: {fmt(o.blocks)}</span> · borrado: {o.annul_reason}</p>)}
+      </details>}
       {canEdit && !draft && !current && suggestion && suggestion.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg bg-indigo-50 p-2 text-sm text-indigo-900">
           <span>Sugerido según sus checadas: <b>{fmt(suggestion)}</b></span>

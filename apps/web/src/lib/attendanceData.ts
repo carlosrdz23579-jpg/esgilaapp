@@ -13,7 +13,7 @@ export const addDays = (iso: string, n: number) => {
 export async function loadAttendance(companyId: string, emps: EmpLite[], from: string, to: string): Promise<EmpAttendance[]> {
   const [co, ws, sx, rv] = await Promise.all([
     supabase.from('companies').select('late_tolerance_min').eq('id', companyId).single(),
-    supabase.from('employee_work_schedules').select('employee_id,blocks,effective_from,created_at').eq('company_id', companyId).lte('effective_from', to)
+    supabase.from('employee_work_schedules').select('employee_id,blocks,effective_from,created_at').eq('company_id', companyId).is('annulled_at', null).lte('effective_from', to)
       .order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
     supabase.from('schedule_exceptions').select('employee_id,date,kind,blocks,replaces_base').eq('company_id', companyId).is('cancelled_at', null).gte('date', from).lte('date', to),
     supabase.from('attendance_reviews').select('employee_id,date,kind,times,reason').eq('company_id', companyId).is('cancelled_at', null).gte('date', from).lte('date', to),

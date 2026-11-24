@@ -226,7 +226,7 @@ export async function exportEmployees(companyId: string, canSalary: boolean, can
     const [cc, ws] = await Promise.all([
       supabase.from('compensation_concepts').select('employee_id,concept_key,kind,amount_cents,active,effective_from,reason,created_at').in('employee_id', ids).is('annulled_at', null)
         .lte('effective_from', t).order('effective_from', { ascending: false }).order('created_at', { ascending: false }),
-      canHours ? supabase.from('employee_work_schedules').select('employee_id,blocks,effective_from,created_at').in('employee_id', ids).lte('effective_from', t)
+      canHours ? supabase.from('employee_work_schedules').select('employee_id,blocks,effective_from,created_at').in('employee_id', ids).is('annulled_at', null).lte('effective_from', t)
         .order('effective_from', { ascending: false }).order('created_at', { ascending: false }) : Promise.resolve({ data: [], error: null }),
     ]);
     type CC = { employee_id: string; concept_key: string; kind: string; amount_cents: number; active: boolean; effective_from: string; reason: string };

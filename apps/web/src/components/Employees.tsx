@@ -103,14 +103,21 @@ export default function Employees() {
           </tbody>
         </table>
       </div>
-      {editing && <EmployeeForm emp={editing === 'new' ? null : editing} depts={depts} groups={groups}
-        onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} onChanged={load} />}
+      {editing && (() => {
+        const idx = editing === 'new' ? -1 : rows.findIndex(r => r.id === editing.id);
+        return <EmployeeForm key={editing === 'new' ? 'new' : editing.id} emp={editing === 'new' ? null : editing} depts={depts} groups={groups}
+          position={idx >= 0 ? `${idx + 1} de ${rows.length}` : undefined}
+          onPrev={idx > 0 ? () => setEditing(rows[idx - 1]) : undefined}
+          onNext={idx >= 0 && idx < rows.length - 1 ? () => setEditing(rows[idx + 1]) : undefined}
+          onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} onChanged={load} />;
+      })()}
     </div>
   );
 }
 
-function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
-  { emp: Emp | null; depts: Dept[]; groups: Group[]; onClose: () => void; onSaved: () => void; onChanged: () => void }) {
+function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged, onPrev, onNext, position }:
+  { emp: Emp | null; depts: Dept[]; groups: Group[]; onClose: () => void; onSaved: () => void; onChanged: () => void;
+    onPrev?: () => void; onNext?: () => void; position?: string }) {
   const { companies, companyId, can, user } = useAuth();
   // Quien no tiene permiso de editar expedientes y llega aquí es Head Coach: solo grupo, puesto, contacto y días.
   const full = !emp || can('employees', 'edit');
@@ -127,9 +134,27 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
 
   const isCoachDept = depts.find(d => d.id === f.department_id)?.name.trim().toLowerCase() === 'coach';
 
+  // Cambios sin guardar: al cerrar o pasar a otro empleado se pregunta qué hacer.
+  const [initial] = useState(() => JSON.stringify({ f, head, workDays }));
+  const dirty = JSON.stringify({ f, head, workDays }) !== initial;
+  const [pending, setPending] = useState<null | (() => void)>(null);
+  const go = (fn?: () => void) => { if (!fn) return; if (dirty) setPending(() => fn); else fn(); };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (e.key === 'Escape') { e.preventDefault(); go(onClose); return; }
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(t.tagName)) return;
+      if (e.key === 'ArrowLeft') go(onPrev); if (e.key === 'ArrowRight') go(onNext);
+    };
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
+  });
+
   async function save(e: React.FormEvent) {
-    e.preventDefault(); setMsg(null);
-    if (workDays.length === 0) return setMsg('Marca al menos un día laborable.');
+    e.preventDefault(); await doSave(onSaved);
+  }
+  async function doSave(after: () => void) {
+    setMsg(null);
+    if (workDays.length === 0) { setMsg('Marca al menos un día laborable.'); return; }
     setBusy(true);
     const nz = (s: string) => (s.trim() === '' ? null : s.trim());
     const payload = { full_name: f.full_name.trim(), department_id: f.department_id, group_id: nz(f.group_id), job_title: nz(f.job_title),
@@ -141,9 +166,9 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
       ? await supabase.from('employees').update(lock ? limited : payload).eq('id', emp.id).select('id')
       : await supabase.from('employees').insert({ ...payload, company_id: f.company_id }).select('id');
     setBusy(false);
-    if (res.error) return setMsg(res.error.message);
-    if (!res.data || res.data.length === 0) return setMsg('No se guardó: no tienes permiso para esta operación.');
-    onSaved();
+    if (res.error) { setMsg(res.error.message); return; }
+    if (!res.data || res.data.length === 0) { setMsg('No se guardó: no tienes permiso para esta operación.'); return; }
+    onChanged(); after();
   }
 
   async function changeState(next: EState) {
@@ -157,12 +182,26 @@ function EmployeeForm({ emp, depts, groups, onClose, onSaved, onChanged }:
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/40 p-4">
+    <div className="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-black/40 p-4" onMouseDown={e => { if (e.target === e.currentTarget) go(onClose); }}>
+      {onPrev && <button aria-label="Empleado anterior" title="Anterior (←)" onClick={() => go(onPrev)}
+        className="fixed left-2 top-1/2 z-40 -translate-y-1/2 rounded-full bg-white px-3 py-2 text-2xl shadow-lg hover:bg-slate-100 md:left-72">‹</button>}
+      {onNext && <button aria-label="Empleado siguiente" title="Siguiente (→)" onClick={() => go(onNext)}
+        className="fixed right-2 top-1/2 z-40 -translate-y-1/2 rounded-full bg-white px-3 py-2 text-2xl shadow-lg hover:bg-slate-100">›</button>}
       <div className="w-full max-w-2xl space-y-4 rounded-2xl bg-white p-5 shadow-xl">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{emp ? emp.full_name : 'Nuevo empleado'}</h3>
-          <button onClick={onClose} aria-label="Cerrar" className="text-xl">×</button>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-lg font-semibold">{emp ? emp.full_name : 'Nuevo empleado'}{dirty && <span className="ml-2 text-xs font-normal text-amber-700">· cambios sin guardar</span>}</h3>
+          {position && <span className="ml-auto text-xs text-slate-400">{position}</span>}
+          <button onClick={() => go(onClose)} aria-label="Cerrar" className="text-2xl leading-none text-slate-500">×</button>
         </div>
+        {pending && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm">
+            <p className="mb-2 font-medium text-amber-900">Hay cambios sin guardar en {emp?.full_name ?? 'este empleado'}.</p>
+            <div className="flex flex-wrap gap-2">
+              <button className="rounded-lg bg-brand px-3 py-1.5 text-white" onClick={() => { const fn = pending; setPending(null); doSave(fn); }}>Guardar y continuar</button>
+              <button className="rounded-lg border px-3 py-1.5" onClick={() => { const fn = pending; setPending(null); fn(); }}>Seguir sin guardar</button>
+              <button className="px-3 py-1.5 text-slate-500" onClick={() => setPending(null)}>Cancelar</button>
+            </div>
+          </div>)}
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2">
           {lock && <p className="sm:col-span-2 rounded bg-indigo-50 p-2 text-xs text-indigo-800">Como Head Coach puedes cambiar grupo, puesto, teléfono, correo, domicilio y días laborables.</p>}
           <label className="sm:col-span-2 text-xs">Nombre completo<input required disabled={lock} className={field} value={f.full_name} onChange={e => set('full_name', e.target.value)} /></label>
