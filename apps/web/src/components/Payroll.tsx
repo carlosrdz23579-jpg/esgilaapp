@@ -17,7 +17,6 @@ const btn2 = 'rounded-lg border px-3 py-1.5 text-sm disabled:opacity-60';
 const WD = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 const fdate = (iso: string) => `${WD[new Date(iso + 'T12:00:00Z').getUTCDay()]} ${+iso.slice(8)}/${+iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const hm = (m: number) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
-const LATE_BPS = 2500;   // 25 % de una hora por retardo (regla de ESGILA)
 const STATUS: Record<string, string> = { borrador: 'Borrador', en_revision: 'Publicada a empleados', autorizada: 'Autorizada', cancelada: 'Cancelada' };
 
 type Detail = PeriodLine['detail'];
@@ -135,6 +134,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
       const err = cc.error ?? xe.error ?? dd.error ?? ln.error ?? wu.error; if (err) throw err;
       const coachDepts = new Set(((await supabase.from('departments').select('id,name').eq('company_id', companyId)).data as { id: string; name: string }[] ?? [])
         .filter(d => d.name.trim().toLowerCase() === 'coach').map(d => d.id));
+      const cfg = (await supabase.from('companies').select('late_deduction_bps,warmup_deduction_min').eq('id', companyId).single()).data as { late_deduction_bps: number; warmup_deduction_min: number } | null;
       const noWarm = new Set(((wu.data ?? []) as { employee_id: string; date: string; active: boolean }[]).filter(w => !w.active).map(w => `${w.employee_id}|${w.date}`));
       type LoanRow = { id: string; employee_id: string; lender: 'empresa' | 'director'; principal_cents: number; interest_cents: number; installment_cents: number; start_date: string; status: Loan['status'] };
       const loanRows = (ln.data as LoanRow[]) ?? [];
@@ -161,7 +161,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
         }
         const a = att.find(x => x.emp.id === emp.id)!;
         const line = computePeriodLine({
-          period: { start: period.start, end: period.end }, payDate, lateDeductionBps: LATE_BPS, concepts,
+          period: { start: period.start, end: period.end }, payDate, lateDeductionBps: cfg?.late_deduction_bps ?? 2500, warmupDeductionMin: cfg?.warmup_deduction_min ?? 30, concepts,
           warmupApplies: coachDepts.has(emp.department_id ?? ''),
           days: a.days.map(d => ({ date: d.date, paidMinutes: d.paidMinutes, attended: d.attended, excused: d.excused,
             late: d.issues.includes('retardo'), scheduled: d.scheduledMinutes > 0, warmupInactive: noWarm.has(`${emp.id}|${d.date}`) })),

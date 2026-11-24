@@ -571,3 +571,25 @@ begin
   reset role;
   raise notice 'OK: rotación de calentamiento';
 end $$;
+
+-- 0027: configuración por sucursal
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos'); ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  ok := false; begin insert into public.warmup_leaders (company_id, date, slot, position, mode) values (vin, '2026-11-27', 1, 1, 'sin_asignar'); exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó calentamiento en viernes'; end if;
+  update public.companies set warmup_schedule = warmup_schedule || '{"6":[{"start":"10:00","end":"11:00","teachers":1}]}', planning_deadline_day = 20 where id = vin;
+  insert into public.warmup_leaders (company_id, date, slot, position, mode) values (vin, '2026-11-28', 1, 1, 'sin_asignar');
+  if app.planning_deadline_co(vin, '2026-12-01') <> '2026-11-20' then raise exception 'límite configurable'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin update public.companies set late_deduction_bps = 0 where id = vin; exception when others then ok := true; end;
+  if not ok then raise exception 'admin sin permiso cambió la configuración'; end if;
+  reset role;
+  raise notice 'OK: configuración por sucursal';
+end $$;

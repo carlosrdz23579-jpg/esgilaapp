@@ -18,6 +18,7 @@ export interface PeriodInput {
   loanLines?: LoanLine[];          // préstamos del periodo (loanLinesForPeriod)
   manual?: { label: string; amountCents: Cents }[];   // ajustes a mano: + percepción, − descuento
   warmupApplies?: boolean;         // solo coaches (por defecto sí, para compatibilidad)
+  warmupDeductionMin?: number;     // minutos descontados por día sin calentamiento activo (configurable; 30)
 }
 export interface PeriodLine {
   payDate: string;
@@ -28,7 +29,7 @@ export interface PeriodLine {
     warmup: { days: number; perDay: string; total: string } | null;
     manual: { label: string; amount: string }[];
     /** Datos con los que se calculó: permiten editar la línea a mano y recalcularla igual. */
-    inputs: { concepts: { key: string; label: string; kind: string; amount: string; weekdays: number[] }[]; lateBps: number; warmupApplies?: boolean;
+    inputs: { concepts: { key: string; label: string; kind: string; amount: string; weekdays: number[] }[]; lateBps: number; warmupApplies?: boolean; warmupMin?: number;
       extras: { id: string; label: string; amount: string; kind: string; start: string; end: string | null }[];
       deductions: { id: string; label: string; amount: string; kind: string; start: string; end: string | null }[] };
     loans: string;
@@ -67,7 +68,7 @@ export function computePeriodLine(i: PeriodInput): PeriodLine {
   let warmup: PeriodLine['detail']['warmup'] = null; let warmTotal = 0n;
   if (warmDays > 0) {
     if (rate === null) warnings.push(`${warmDays} día(s) sin calentamiento activo, pero no tiene tarifa por hora ni tarifa base: no se descontó.`);
-    else { const per = mulDivRound(rate, 30n, 60n); warmTotal = per * BigInt(warmDays); warmup = { days: warmDays, perDay: per.toString(), total: warmTotal.toString() }; }
+    else { const per = mulDivRound(rate, BigInt(i.warmupDeductionMin ?? 30), 60n); warmTotal = per * BigInt(warmDays); warmup = { days: warmDays, perDay: per.toString(), total: warmTotal.toString() }; }
   }
   const manual = i.manual ?? [];
   const manualPlus = manual.filter(m => m.amountCents > 0n).reduce((n, m) => n + m.amountCents, 0n);
@@ -91,7 +92,7 @@ export function computePeriodLine(i: PeriodInput): PeriodLine {
       manual: manual.map(m => ({ label: m.label, amount: m.amountCents.toString() })),
       inputs: {
         concepts: i.concepts.map(c => ({ key: c.key, label: c.label, kind: c.kind, amount: c.amountCents.toString(), weekdays: [...c.weekdays] })),
-        lateBps: i.lateDeductionBps, warmupApplies: warmApplies,
+        lateBps: i.lateDeductionBps, warmupApplies: warmApplies, warmupMin: i.warmupDeductionMin ?? 30,
         extras: i.extras.map(e => ({ id: e.id, label: e.label, amount: e.amountCents.toString(), kind: e.kind, start: e.startDate, end: e.endDate ?? null })),
         deductions: i.deductions.map(e => ({ id: e.id, label: e.label, amount: e.amountCents.toString(), kind: e.kind, start: e.startDate, end: e.endDate ?? null })),
       },
@@ -119,7 +120,7 @@ export function recomputeLine(prev: PeriodLine['detail'], period: Period, payDat
   const toDed = (e: PeriodLine['detail']['inputs']['extras'][number]): Deduction =>
     ({ id: e.id, label: e.label, amountCents: BigInt(e.amount), kind: e.kind as Deduction['kind'], startDate: e.start, endDate: e.end, status: 'autorizado' });
   return computePeriodLine({
-    period, payDate, lateDeductionBps: prev.inputs.lateBps, manual, warmupApplies: prev.inputs.warmupApplies ?? true,
+    period, payDate, lateDeductionBps: prev.inputs.lateBps, manual, warmupApplies: prev.inputs.warmupApplies ?? true, warmupDeductionMin: prev.inputs.warmupMin ?? 30,
     concepts: prev.inputs.concepts.map(c => ({ key: c.key, label: c.label, kind: c.kind as Concept['kind'], amountCents: BigInt(c.amount), weekdays: c.weekdays })),
     days: days.map(d => ({ date: d.date, paidMinutes: d.minutes, scheduled: d.scheduled, warmupInactive: d.warmupInactive,
       attended: d.status !== 'Falta' && d.status !== 'Justificada' && (d.minutes > 0 || d.status === 'Tarde'),

@@ -70,3 +70,9 @@ test('calentamiento no aplica a Staff', () => {
   const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [], warmupApplies: false });
   assert.equal(l.detail.warmup, null); assert.equal(l.netCents, 240000n);
 });
+
+test('descuento de calentamiento configurable (45 min)', () => {
+  const d2: PeriodDay[] = days.map((x, i) => ({ ...x, late: false, scheduled: true, warmupInactive: i === 0 }));
+  const l = computePeriodLine({ period, payDate: '2026-11-21', days: d2, concepts: [hora], lateDeductionBps: 2500, extras: [], deductions: [], warmupDeductionMin: 45 });
+  assert.equal(l.detail.warmup?.total, '7500');
+});

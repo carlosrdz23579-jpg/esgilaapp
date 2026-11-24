@@ -9,6 +9,7 @@ import Cash from './Cash';
 import Warmup from './Warmup';
 import Users from './Users';
 import CoachCalendar from './CoachCalendar';
+import Settings from './Settings';
 
 interface Mod { key: string; label: string; icon: string; visible: (a: ReturnType<typeof useAuth>) => boolean }
 const ALWAYS = () => true;
@@ -65,7 +66,7 @@ export default function Shell() {
         </header>
         <main className="flex-1 p-4">
           <h2 className="mb-4 text-xl font-semibold">{current?.label}</h2>
-          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : current?.key === 'calentamiento' ? <Warmup /> : current?.key === 'usuarios' ? <Users /> : current?.key === 'coaches' ? <CoachCalendar /> : (
+          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : current?.key === 'calentamiento' ? <Warmup /> : current?.key === 'usuarios' ? <Users /> : current?.key === 'coaches' ? <CoachCalendar /> : current?.key === 'config' ? <Settings /> : (
             <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
               Módulo en construcción (aún sin funcionalidad). Empresas cargadas: {auth.companies.length}.
             </div>)}

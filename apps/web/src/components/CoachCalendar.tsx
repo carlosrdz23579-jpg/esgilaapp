@@ -14,7 +14,14 @@ const monthLabel = (ym: string) => `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(0,
 const addMonth = (ym: string, n: number) => { const d = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
 const quarterOf = (iso: string) => { const y = +iso.slice(0, 4), q = Math.floor((+iso.slice(5, 7) - 1) / 3);
   return { start: `${y}-${String(q * 3 + 1).padStart(2, '0')}-01`, end: new Date(Date.UTC(y, q * 3 + 3, 0)).toISOString().slice(0, 10), label: `${['1er', '2º', '3er', '4º'][q]} trimestre ${y}` }; };
-const deadlineOf = (ym: string) => `${addMonth(ym, -1)}-25`;
+const deadlineOf = (ym: string, day = 25) => `${addMonth(ym, -1)}-${String(day).padStart(2, '0')}`;
+/** Ajustes de la sucursal (Configuración). */
+function useCompanyCfg(companyId: string) {
+  const [cfg, setCfg] = useState({ planning_deadline_day: 25, planning_max_uploads: 2 });
+  useEffect(() => { supabase.from('companies').select('planning_deadline_day,planning_max_uploads').eq('id', companyId).single()
+    .then(({ data }) => data && setCfg(data as typeof cfg)); }, [companyId]);
+  return cfg;
+}
 
 interface Emp { id: string; full_name: string; company_id: string; work_days: number[]; department_id: string; user_id: string | null }
 interface PFile { id: string; company_id: string; kind: 'general' | 'mensual' | 'apunte'; employee_id: string | null; period_start: string; period_end: string | null;
@@ -74,14 +81,15 @@ function useCoaches(companyId: string) {
   return coaches;
 }
 
-interface Slot { label: string; teachers: number }
+interface Slot { start: string; end: string; teachers: number }
+const slotLabel = (s: Slot) => `${s.start}–${s.end}`;
 interface Lead { slot: number; label: string; employeeId: string | null; fromRotation: boolean }
 
 function Calendar({ companyId }: { companyId: string }) {
   const { can } = useAuth();
   const [month, setMonth] = usePersisted('coaches:mes', todayMx().slice(0, 7));
   const coaches = useCoaches(companyId);
-  const [slots, setSlots] = useState<Slot[]>([{ label: 'Calentamiento', teachers: 1 }]);
+  const [schedule, setSchedule] = useState<Record<string, Slot[]>>({});
   const [rotation, setRotation] = useState<Record<string, string | null>>({});
   const [overrides, setOverrides] = useState<Record<string, { mode: string; employee_id: string | null }>>({});
   const [att, setAtt] = useState<Record<string, { arrival: string | null; uniform: boolean | null }>>({});
@@ -97,11 +105,11 @@ function Calendar({ companyId }: { companyId: string }) {
     const [l, a, c, r] = await Promise.all([
       supabase.from('warmup_leader_latest').select('date,slot,position,mode,employee_id').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
       supabase.from('staff_attendance_latest').select('employee_id,date,arrival,uniform').eq('company_id', companyId).gte('date', days[0]).lte('date', days[days.length - 1]),
-      supabase.from('companies').select('warmup_slots').eq('id', companyId).single(),
+      supabase.from('companies').select('warmup_schedule').eq('id', companyId).single(),
       supabase.from('warmup_rotation_latest').select('weekday,slot,position,employee_id').eq('company_id', companyId),
     ]);
     const err = l.error ?? c.error ?? r.error; if (err) setMsg(err.message);
-    setSlots(((c.data as { warmup_slots: Slot[] } | null)?.warmup_slots) ?? [{ label: 'Calentamiento', teachers: 1 }]);
+    setSchedule(((c.data as { warmup_schedule: Record<string, Slot[]> } | null)?.warmup_schedule) ?? {});
     setRotation(Object.fromEntries(((r.data ?? []) as { weekday: number; slot: number; position: number; employee_id: string | null }[]).map(x => [`${x.weekday}|${x.slot}|${x.position}`, x.employee_id])));
     setOverrides(Object.fromEntries(((l.data ?? []) as { date: string; slot: number; position: number; mode: string; employee_id: string | null }[]).map(x => [`${x.date}|${x.slot}|${x.position}`, x])));
     setAtt(Object.fromEntries(((a.data ?? []) as { employee_id: string; date: string; arrival: string | null; uniform: boolean | null }[]).map(x => [`${x.employee_id}|${x.date}`, x])));
@@ -109,6 +117,7 @@ function Calendar({ companyId }: { companyId: string }) {
   useEffect(() => { load(); }, [load]);
 
   const wd = (iso: string) => new Date(iso + 'T12:00:00Z').getUTCDay();
+  const slotsFor = (iso: string) => schedule[String(wd(iso))] ?? [];
   const working = (iso: string) => coaches.filter(c => c.work_days.includes(wd(iso)));
   const name = (id: string | null | undefined) => coaches.find(c => c.id === id)?.full_name ?? '';
   const first = (id: string | null | undefined) => name(id).split(' ')[0];
@@ -118,8 +127,8 @@ function Calendar({ companyId }: { companyId: string }) {
     if (o && o.mode !== 'rotacion') return { id: o.mode === 'asignado' ? o.employee_id : null, rot: false };
     return { id: rotation[`${wd(iso)}|${slot}|${pos}`] ?? null, rot: true };
   };
-  const leadsOf = (iso: string): Lead[] => slots.flatMap((sl, k) => Array.from({ length: sl.teachers }, (_, p) => {
-    const e = effective(iso, k + 1, p + 1); return { slot: k + 1, label: sl.label, employeeId: e.id, fromRotation: e.rot };
+  const leadsOf = (iso: string): Lead[] => slotsFor(iso).flatMap((sl, k) => Array.from({ length: sl.teachers }, (_, p) => {
+    const e = effective(iso, k + 1, p + 1); return { slot: k + 1, label: slotLabel(sl), employeeId: e.id, fromRotation: e.rot };
   }));
   async function setLead(iso: string, slot: number, pos: number, v: string) {
     const row = v === '__rot' ? { mode: 'rotacion' } : v === '__none' ? { mode: 'sin_asignar' } : { mode: 'asignado', employee_id: v };
@@ -127,7 +136,7 @@ function Calendar({ companyId }: { companyId: string }) {
     if (error) setMsg(error.message); else load();
   }
   const offset = wd(days[0]);
-  const multi = slots.length > 1 || slots.some(s => s.teachers > 1);
+  const multiOf = (iso: string) => { const sl = slotsFor(iso); return sl.length > 1 || sl.some(s => s.teachers > 1); };
 
   return (
     <div className="space-y-3">
@@ -135,7 +144,7 @@ function Calendar({ companyId }: { companyId: string }) {
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, -1))}>‹</button>
         <b className="w-40 text-center capitalize">{monthLabel(month)}</b>
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, 1))}>›</button>
-        <p className="ml-2 text-xs text-slate-500">🔥 dirigen el calentamiento ({slots.map(s => `${s.label}: ${s.teachers} maestro(s)`).join(' · ')}); el resto ayuda activamente. Clic en un día para ver{canAtt ? ' y registrar llegada y uniforme' : ' quién trabaja'}.</p>
+        <p className="ml-2 text-xs text-slate-500">🔥 dirigen el calentamiento; el resto ayuda activamente. Días, horas y maestros por calentamiento se cambian en Configuración. Clic en un día para ver{canAtt ? ' y registrar llegada y uniforme' : ' quién trabaja'}.</p>
         {canLead && <button className="ml-auto rounded-lg border px-3 py-1.5 text-sm" onClick={() => setRotOpen(true)}>Rotación semanal</button>}
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
@@ -146,12 +155,13 @@ function Calendar({ companyId }: { companyId: string }) {
           const w = working(iso); const isToday = iso === todayMx();
           const noUni = w.filter(c => att[`${c.id}|${iso}`]?.uniform === false).length;
           const opts = [...w, ...coaches.filter(c => !w.includes(c))];
+          const slots = slotsFor(iso); const multi = multiOf(iso);
           return (
             <div key={iso} onClick={() => setDay(iso)} className={`min-h-[6rem] cursor-pointer rounded-lg border bg-white p-1.5 hover:border-brand ${isToday ? 'border-brand ring-1 ring-brand' : ''} ${w.length === 0 ? 'opacity-50' : ''}`}>
               <div className="flex justify-between"><b>{+iso.slice(8)}</b>{w.length > 0 && <span className="text-slate-400">{w.length}</span>}</div>
               {w.length > 0 && slots.map((sl, k) => (
                 <div key={k} className="mt-1">
-                  {multi && <p className="text-[10px] font-semibold text-slate-500">🔥 {sl.label}</p>}
+                  {multi && <p className="text-[10px] font-semibold text-slate-500">🔥 {slotLabel(sl)}</p>}
                   {Array.from({ length: sl.teachers }, (_, p) => {
                     const e = effective(iso, k + 1, p + 1); const o = overrides[`${iso}|${k + 1}|${p + 1}`];
                     const value = !o || o.mode === 'rotacion' ? '__rot' : o.mode === 'sin_asignar' ? '__none' : o.employee_id ?? '__none';
@@ -168,17 +178,17 @@ function Calendar({ companyId }: { companyId: string }) {
         })}
       </div>
       {canLead && <p className="text-xs text-slate-500">Lo que viene de la rotación se llena solo cada semana. Si cambias a alguien un día, se marca en ámbar; "Según rotación" lo regresa.</p>}
-      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} leads={leadsOf(day)} multi={multi} att={att} canAtt={canAtt}
+      {day && <DayPanel iso={day} companyId={companyId} coaches={working(day)} leads={leadsOf(day)} multi={multiOf(day)} att={att} canAtt={canAtt}
         onClose={() => setDay(null)} onChanged={load} />}
-      {rotOpen && <RotationEditor companyId={companyId} slots={slots} coaches={coaches} rotation={rotation} onClose={() => setRotOpen(false)} onChanged={load} />}
+      {rotOpen && <RotationEditor companyId={companyId} schedule={schedule} coaches={coaches} rotation={rotation} onClose={() => setRotOpen(false)} onChanged={load} />}
     </div>
   );
 }
 
-function RotationEditor({ companyId, slots, coaches, rotation, onClose, onChanged }:
-  { companyId: string; slots: Slot[]; coaches: Emp[]; rotation: Record<string, string | null>; onClose: () => void; onChanged: () => void }) {
+function RotationEditor({ companyId, schedule, coaches, rotation, onClose, onChanged }:
+  { companyId: string; schedule: Record<string, Slot[]>; coaches: Emp[]; rotation: Record<string, string | null>; onClose: () => void; onChanged: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
-  const weekdays = [1, 2, 3, 4, 5, 6, 0].filter(d => coaches.some(c => c.work_days.includes(d)));
+  const weekdays = [1, 2, 3, 4, 5, 6, 0].filter(d => (schedule[String(d)] ?? []).length > 0);
   async function set(wdN: number, slot: number, pos: number, v: string) {
     const { error } = await supabase.from('warmup_rotation').insert({ company_id: companyId, weekday: wdN, slot, position: pos, employee_id: v || null });
     if (error) setMsg(error.message); else onChanged();
@@ -186,20 +196,21 @@ function RotationEditor({ companyId, slots, coaches, rotation, onClose, onChange
   return (
     <Modal wide title="Rotación semanal del calentamiento" onClose={onClose}>
       <p className="text-xs text-slate-500">Se repite cada semana. Los cambios de un día concreto se hacen en el calendario.</p>
-      <div className="overflow-x-auto"><table className="w-full text-sm">
-        <thead><tr className="text-left text-xs text-slate-500"><th className="py-1">Día</th>{slots.map((s, k) => <th key={k} colSpan={s.teachers}>🔥 {s.label}</th>)}</tr></thead>
-        <tbody>{weekdays.map(d => (
-          <tr key={d} className="border-t">
-            <td className="py-1.5 font-medium">{WD[d]}</td>
-            {slots.flatMap((s, k) => Array.from({ length: s.teachers }, (_, p) => (
-              <td key={`${k}-${p}`} className="pr-2">
-                <select className="w-full rounded border px-1 py-1 text-xs" value={rotation[`${d}|${k + 1}|${p + 1}`] ?? ''} onChange={e => set(d, k + 1, p + 1, e.target.value)}>
+      {weekdays.length === 0 && <p className="text-sm text-slate-500">No hay días con calentamiento. Agrégalos en Configuración → Calentamiento.</p>}
+      <div className="space-y-2">{weekdays.map(d => (
+        <div key={d} className="rounded-lg border p-2">
+          <p className="mb-1 text-sm font-semibold">{WD[d]}</p>
+          {(schedule[String(d)] ?? []).map((s, k) => (
+            <div key={k} className="flex flex-wrap items-center gap-2 py-0.5 text-xs">
+              <span className="w-28 text-slate-500">🔥 {slotLabel(s)}</span>
+              {Array.from({ length: s.teachers }, (_, p) => (
+                <select key={p} className="min-w-[12rem] rounded border px-1 py-1" value={rotation[`${d}|${k + 1}|${p + 1}`] ?? ''} onChange={e => set(d, k + 1, p + 1, e.target.value)}>
                   <option value="">— nadie —</option>
                   {[...coaches.filter(c => c.work_days.includes(d)), ...coaches.filter(c => !c.work_days.includes(d))].map(c =>
                     <option key={c.id} value={c.id}>{c.full_name}{c.work_days.includes(d) ? '' : ' (no trabaja ese día)'}</option>)}
-                </select></td>)))}
-          </tr>))}</tbody>
-      </table></div>
+                </select>))}
+            </div>))}
+        </div>))}</div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
     </Modal>
   );
@@ -253,6 +264,7 @@ function DayPanel({ iso, companyId, coaches, leads, multi, att, canAtt, onClose,
 // ---------------------------------------------------------------------------
 function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
   const { can } = useAuth();
+  const cfg = useCompanyCfg(companyId);
   const [files, setFiles] = useState<PFile[]>([]);
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<PFile | null>(null);
@@ -271,7 +283,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
   const mine = files.filter(f => f.employee_id === me?.id);
   const myMonthly = mine.filter(f => f.kind === 'mensual' && f.period_start.slice(0, 7) === planMonth);
   const myNotes = mine.filter(f => f.kind === 'apunte');
-  const daysLeft = Math.round((Date.parse(deadlineOf(planMonth)) - Date.parse(todayMx())) / 864e5);
+  const daysLeft = Math.round((Date.parse(deadlineOf(planMonth, cfg.planning_deadline_day)) - Date.parse(todayMx())) / 864e5);
 
   async function addGeneral(f: File) {
     const q = quarterOf(gq); setBusy(true); setMsg(null);
@@ -333,7 +345,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
               <b className="w-32 text-center capitalize">{monthLabel(planMonth)}</b>
               <button className="rounded border px-2" onClick={() => setPlanMonth(addMonth(planMonth, 1))}>›</button></span></div>
           <p className={`text-xs ${daysLeft >= 0 && daysLeft <= 3 ? 'font-semibold text-amber-700' : 'text-slate-500'}`}>
-            Fecha límite: 25 de {MONTHS[+addMonth(planMonth, -1).slice(5, 7) - 1]}{daysLeft > 0 ? ` · faltan ${daysLeft} día(s)` : daysLeft === 0 ? ' · ¡es hoy!' : ' · ya pasó (se marca como envío tardío)'}. Cualquier tipo de archivo; hasta 2 envíos por parte.</p>
+            Fecha límite: {cfg.planning_deadline_day} de {MONTHS[+addMonth(planMonth, -1).slice(5, 7) - 1]}{daysLeft > 0 ? ` · faltan ${daysLeft} día(s)` : daysLeft === 0 ? ' · ¡es hoy!' : ' · ya pasó (se marca como envío tardío)'}. Cualquier tipo de archivo; hasta {cfg.planning_max_uploads} envío(s) por parte.</p>
           <div className="grid gap-2 sm:grid-cols-2">{([1, 2] as const).map(part => {
             const sent = myMonthly.filter(f => f.part === part);
             return (
@@ -341,7 +353,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
                 <p className="font-medium">Semanas {part === 1 ? '1–2' : '3–4'}</p>
                 {sent.map(f => <p key={f.id} className="text-xs"><button className="text-brand underline" onClick={() => f.storage_path && openFile(f.storage_path)}>{f.file_name}</button>
                   {' '}· {f.created_at.slice(0, 10)} {f.late ? <span className="font-semibold text-red-700">envío tardío</span> : <span className="text-green-700">a tiempo</span>}{f.reviewed_at && ' · revisada ✓'}</p>)}
-                {sent.length < 2 && <label className="mt-1 inline-block cursor-pointer text-xs text-brand">{sent.length ? '+ Subir versión actualizada' : '+ Subir'}<input type="file" hidden disabled={busy} onChange={e => e.target.files?.[0] && addMonthly(part, e.target.files[0])} /></label>}
+                {sent.length < cfg.planning_max_uploads && <label className="mt-1 inline-block cursor-pointer text-xs text-brand">{sent.length ? '+ Subir versión actualizada' : '+ Subir'}<input type="file" hidden disabled={busy} onChange={e => e.target.files?.[0] && addMonthly(part, e.target.files[0])} /></label>}
               </div>);
           })}</div>
         </section>
@@ -373,6 +385,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
 // ---------------------------------------------------------------------------
 function ReviewPlans({ companyId }: { companyId: string }) {
   const coaches = useCoaches(companyId);
+  const cfg = useCompanyCfg(companyId);
   const [files, setFiles] = useState<PFile[]>([]);
   const [month, setMonth] = usePersisted('coaches:revisionMes', addMonth(todayMx().slice(0, 7), 1));
   const [open, setOpen] = useState<Emp | null>(null); const [msg, setMsg] = useState<string | null>(null);
@@ -382,7 +395,7 @@ function ReviewPlans({ companyId }: { companyId: string }) {
     if (error) setMsg(error.message); else setFiles((data as PFile[]) ?? []);
   }, [companyId]);
   useEffect(() => { load(); }, [load]);
-  const overdue = todayMx() > deadlineOf(month);
+  const overdue = todayMx() > deadlineOf(month, cfg.planning_deadline_day);
   const status = (empId: string, part: number) => {
     const f = files.filter(x => x.employee_id === empId && x.kind === 'mensual' && x.part === part && x.period_start.slice(0, 7) === month);
     if (!f.length) return overdue ? <span className="font-semibold text-red-700">no entregó</span> : <span className="text-slate-400">pendiente</span>;
@@ -399,7 +412,7 @@ function ReviewPlans({ companyId }: { companyId: string }) {
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, -1))}>‹</button>
         <b className="w-36 text-center capitalize">{monthLabel(month)}</b>
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, 1))}>›</button>
-        <span className="ml-3 text-xs text-slate-500">Límite: {deadlineOf(month)} · apuntes contados en el {q.label}</span></div>
+        <span className="ml-3 text-xs text-slate-500">Límite: {deadlineOf(month, cfg.planning_deadline_day)} · apuntes contados en el {q.label}</span></div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-left text-sm">
