@@ -25,7 +25,10 @@ $$;
 -- Cambios de un día
 alter table public.warmup_leaders add column if not exists position smallint not null default 1 check (position between 1 and 4);
 alter table public.warmup_leaders add column if not exists mode text not null default 'asignado' check (mode in ('asignado', 'sin_asignar', 'rotacion'));
+-- Los días que ya estaban "sin asignar" pasan a ese modo (la regla de no editar se pausa solo para esto).
+alter table public.warmup_leaders disable trigger trg_guard_wl;
 update public.warmup_leaders set mode = 'sin_asignar' where employee_id is null and mode = 'asignado';
+alter table public.warmup_leaders enable trigger trg_guard_wl;
 drop index if exists wl_company_date_slot;
 create index if not exists wl_company_date_slot_pos on public.warmup_leaders (company_id, date, slot, position, created_at desc);
 drop view if exists public.warmup_leader_latest;
