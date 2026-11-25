@@ -333,7 +333,7 @@ function RunPanel({ companyId, period, run, onChanged, canEdit, canAuth, isDirec
 }
 
 /** Desglose como en el Excel: tabla por día (Día · Horas · Faltas) y resumen de la nómina. */
-function LineDetail({ line }: { line: Line }) {
+function LineDetail({ line, employeeView }: { line: Line; employeeView?: boolean }) {
   const d = line.detail;
   const days = d.days ?? [];                       // versiones anteriores a este desglose no lo traen
   const conceptsTotal = d.concepts.reduce((n, c) => n + BigInt(c.amount), 0n);
@@ -377,7 +377,7 @@ function LineDetail({ line }: { line: Line }) {
           {row('Nómina neta', formatMXN(line.net_cents), true)}
           {row('Nómina reportada', line.reported_cents == null ? '—' : formatMXN(line.reported_cents))}
           {d.excused > 0 && <tr><td colSpan={2} className="pt-1 text-xs text-slate-500">{d.excused} falta(s) justificada(s)</td></tr>}
-          {d.warnings.map((w, i) => <tr key={'w' + i}><td colSpan={2} className="pt-1 text-xs text-amber-700">⚠ {w}</td></tr>)}
+          {!employeeView && d.warnings.map((w, i) => <tr key={'w' + i}><td colSpan={2} className="pt-1 text-xs text-amber-700">⚠ {w}</td></tr>)}
         </tbody>
       </table>
     </div>
@@ -434,7 +434,7 @@ function MyPayroll() {
               <b>Pago del {fdate(it.line.pay_date)}</b><span className="text-xs text-slate-500">trabajo del {fdate(it.run.period_start)} al {fdate(it.run.period_end)}</span>
               <span className="ml-auto text-lg font-semibold">{formatMXN(it.line.net_cents)}</span>
             </div>
-            <LineDetail line={it.line} />
+            <LineDetail line={it.line} employeeView />
             <div className="flex flex-wrap items-center gap-2 text-sm">
               {it.run.status === 'autorizada' ? <span className="text-green-700">Autorizada</span>
                 : it.conf ? <span className={it.conf.decision === 'confirmada' ? 'text-green-700' : 'text-amber-700'}>{it.conf.decision === 'confirmada' ? '✓ La confirmaste' : `Dejaste una observación: ${it.conf.comment}`}</span>
