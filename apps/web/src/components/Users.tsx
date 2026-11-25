@@ -22,6 +22,7 @@ export const PERM_MODULES: { key: string; label: string; actions: string[]; econ
   { key: 'indicators', label: 'Catálogo de indicadores', actions: ['view', 'configure'], group: 'Seguimiento' },
   { key: 'planning', label: 'Planeaciones (Ver = revisar; Configurar = subir la general)', actions: ['view', 'edit', 'configure'], group: 'Seguimiento' },
   { key: 'uniform', label: 'Asistencia y uniforme de maestros', actions: ['view', 'edit'], group: 'Seguimiento' },
+  { key: 'students', label: 'Alumnas (Ver; Editar = pasar lista; Crear = notas internas; Configurar = importar de EVO y clases)', actions: ['view', 'edit', 'create', 'configure'], group: 'Alumnas' },
   { key: 'reports_shared', label: 'Reportes compartidos', actions: ['view', 'share'], group: 'Comunicación' },
   { key: 'announcements', label: 'Anuncios', actions: ['view', 'create', 'edit'], group: 'Comunicación' },
   { key: 'complaints', label: 'Quejas y sugerencias', actions: ['view', 'edit'], group: 'Comunicación' },

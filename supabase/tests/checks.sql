@@ -612,3 +612,40 @@ begin
   reset role;
   raise notice 'OK: semanales con fecha pasada y eventos';
 end $$;
+
+-- 0030: alumnas, importación EVO, pase de lista y notas
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        imp uuid; st uuid; cl uuid; n uuid; ok boolean; c int;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  imp := public.import_evo(vin, '2026-11-01', 'lista.xls', '[
+    {"evo_id":"1321","name":"María Emilia Ruiz","phone":"871","birth":"2023-06-02","enrolled":"2026-08-11","activity":"Baby Gym 1","start":"16:00","end":"17:00","weekdays":[2,4]},
+    {"evo_id":"1390","name":"Luisa Faccuseh","phone":null,"birth":null,"enrolled":null,"activity":"Baby Gym 1","start":"16:00","end":"17:00","weekdays":[1,3]}]');
+  imp := public.import_evo(vin, '2026-11-01', 'lista.xls', '[
+    {"evo_id":"1321","name":"María Emilia Ruiz Arellano","phone":null,"birth":null,"enrolled":null,"activity":"Baby Gym 1","start":"16:00","end":"17:30","weekdays":[2,4]}]');
+  select count(*) into c from public.students where company_id = vin;
+  if c <> 2 then raise exception 'reimportar duplicó alumnas (%)', c; end if;
+  select count(*) into c from public.student_enrollments where company_id = vin and month = '2026-11-01';
+  if c <> 1 then raise exception 'reimportar el mismo mes no reemplazó la inscripción (%)', c; end if;
+  if (select duration_min from public.class_groups_v where company_id = vin and activity = 'Baby Gym 1') <> 90 then raise exception 'duración detectada'; end if;
+  select id into st from public.students where evo_id = '1321' and company_id = vin;
+  if (select phone from public.students where id = st) <> '871' then raise exception 'reimportar borró el teléfono'; end if;
+  select id into cl from public.class_groups where company_id = vin and activity = 'Baby Gym 1';
+  insert into public.student_attendance (company_id, student_id, class_id, date, arrival) values (vin, st, cl, app.today_mx(), '16:05');
+  insert into public.student_notes (company_id, student_id, body) values (vin, st, 'Le cuesta la vertical') returning id into n;
+  update public.student_notes set deleted_at = now() where id = n;
+  ok := false; begin update public.student_notes set body = 'x' where id = n; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó una nota borrada'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin perform public.import_evo(vin, '2026-11-01', 'x', '[]'); exception when others then ok := true; end;
+  if not ok then raise exception 'importó sin permiso'; end if;
+  if exists (select 1 from public.student_notes where id = n) then raise exception 'sin permiso ve notas'; end if;
+  reset role;
+  raise notice 'OK: alumnas, EVO, pase de lista y notas';
+end $$;
