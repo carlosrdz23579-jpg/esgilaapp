@@ -45,7 +45,8 @@ grant select on public.plans_v to authenticated;
 update public.plans p set use_table = false where use_table and exists (select 1 from public.plan_prices x where x.plan_id = p.id);
 
 -- vista de la tabla vigente
-create or replace view public.hour_prices_current with (security_invoker = true) as
+drop view if exists public.hour_prices_current;
+create view public.hour_prices_current with (security_invoker = true) as
   select distinct on (company_id, hours) company_id, hours, effective_month, price_cents
   from public.hour_prices where effective_month <= date_trunc('month', app.today_mx())::date
   order by company_id, hours, effective_month desc, created_at desc;

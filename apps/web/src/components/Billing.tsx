@@ -13,7 +13,7 @@ const CATS: Record<string, string> = { indumentaria: 'Indumentaria', accesorio: 
 
 export interface DiscRule { company_id: string; discipline: string; is_combo: boolean; min_hours: number; max_hours: number; max_total_hours: number; min_total_hours: number | null }
 export interface Plan { id: string; company_id: string; discipline: string; name: string; hours_per_week: number | null; kind: 'individual' | 'familiar';
-  max_members: number | null; is_active: boolean; sort: number; price_cents: number | null; active_subs: number; use_table: boolean }
+  max_members: number | null; is_active: boolean; sort: number; price_cents: number | null; active_subs: number; use_table: boolean; table_label: string | null }
 
 function useCompany() {
   const { companyId, companies } = useAuth();
@@ -54,8 +54,10 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [from, setFrom] = useState(thisMonth());
   const [hist, setHist] = useState<{ plan: Plan; rows: { effective_month: string; price_cents: number; created_at: string }[] } | null>(null);
   const [newDisc, setNewDisc] = useState<{ name: string; combo: boolean; maxTotal: string; rows: { hours: string; price: string }[] } | null>(null);
-  const [rules, setRules] = useState<DiscRule[]>([]);
+  const [rules, setRules] = useState<DiscRule[]>([]); const [labels, setLabels] = useState<string[]>([]);
   const load = useCallback(async () => {
+    const lb = await supabase.from('hour_prices_current').select('label').eq('company_id', co).not('label', 'is', null).not('price_cents', 'is', null);
+    setLabels([...new Set((lb.data ?? []).map(x => x.label as string))]);
     const [p, r] = await Promise.all([supabase.from('plans_v').select('*').eq('company_id', co).order('discipline').order('hours_per_week').order('name'),
       supabase.from('discipline_rules').select('*').eq('company_id', co)]);
     if (p.error) setMsg(p.error.message); setPlans((p.data as Plan[]) ?? []); setRules((r.data as DiscRule[]) ?? []);
@@ -71,8 +73,11 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
 
   async function addTier(discipline: string, hours: string, price: string, name?: string) {
     const h = hours ? +hours : null;
+    const nm = (name?.trim() || (h ? hoursName(h) : '')).trim();
+    const label = !h && !price ? labels.find(l => l.toLowerCase() === nm.toLowerCase()) ?? null : null;
+    if (!h && !price && !label) return `"${nm}" no tiene horas ni está en la Tabla de precios: agrégalo ahí como renglón de texto o ponle precio propio.`;
     const { data, error } = await supabase.from('plans').insert({ company_id: co, discipline, name: (name?.trim() || (h ? hoursName(h) : '')).trim(),
-      hours_per_week: h, use_table: !price && h !== null, sort: plans.filter(p => p.discipline === discipline).length + 1 }).select('id').single();
+      hours_per_week: h, use_table: !price && (h !== null || !!label), table_label: label, sort: plans.filter(p => p.discipline === discipline).length + 1 }).select('id').single();
     if (error) return error.message.includes('unique') ? `Ya existe "${name || hoursName(h ?? 0)}" en ${discipline}.` : error.message;
     if (price) { const r = await supabase.from('plan_prices').insert({ plan_id: data.id, effective_month: `${from}-01`, price_cents: toCents(price) }); if (r.error) return r.error.message; }
     return null;
@@ -92,7 +97,12 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   async function saveDisc() {
     if (!newDisc) return; setMsg(null);
     if (newDisc.combo) await saveRule(newDisc.name.trim(), { is_combo: true, max_total_hours: +newDisc.maxTotal || 12 });
-    for (const r of newDisc.rows.filter(r => r.hours || r.price)) { const e = await addTier(newDisc.name.trim(), r.hours, r.price); if (e) return setMsg(e); }
+    const filled = newDisc.rows.filter(r => r.hours || r.price);
+    // disciplina de un solo plan de la tabla (Equipo, Pre-Equipo…): se crea con ese renglón de texto
+    if (!filled.length && labels.some(l => l.toLowerCase() === newDisc.name.trim().toLowerCase())) {
+      const e = await addTier(newDisc.name.trim(), '', '', newDisc.name.trim()); if (e) return setMsg(e);
+    }
+    for (const r of filled) { const e = await addTier(newDisc.name.trim(), r.hours, r.price); if (e) return setMsg(e); }
     setNewDisc(null); load();
   }
 
@@ -113,7 +123,8 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
           {newDisc.combo && <label className="text-xs">Máximo total de horas<input type="number" className={`${field} block w-20`} value={newDisc.maxTotal} onChange={e => setNewDisc({ ...newDisc, maxTotal: e.target.value })} /></label>}
         </div>
         {newDisc.combo && <p className="text-xs text-slate-500">Las filas son las horas TOTALES de la combinación. Al asignarla se escogen las disciplinas y las horas de cada una.</p>}
-        <p className="text-xs text-slate-500">Deja el precio vacío para que tome el de la <b>Tabla de precios</b> según las horas. Pon precio sólo si esa opción se cobra distinto (por ejemplo Equipo).</p>
+        <p className="text-xs text-slate-500">Deja el precio vacío para que tome el de la <b>Tabla de precios</b> según las horas. Para Equipo o Pre-Equipo: agrégalos primero como renglón de texto en la Tabla de precios,
+          luego crea la disciplina con ese mismo nombre y quita todas las filas de horas (o agrega la opción con ese nombre y sin horas).</p>
         <table className="text-sm"><thead className="text-left text-xs text-slate-500"><tr><th className="pr-3">{newDisc.combo ? 'Horas totales por semana' : 'Horas por semana'}</th><th>Precio mensual</th></tr></thead>
           <tbody>{newDisc.rows.map((r, i) => <tr key={i}>
             <td className="py-1 pr-3"><input type="number" step="0.5" min={0.5} className={`${field} w-24`} value={r.hours} onChange={e => setNewDisc({ ...newDisc, rows: newDisc.rows.map((x, j) => j === i ? { ...x, hours: e.target.value } : x) })} /></td>
@@ -123,7 +134,7 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
         <div className="flex gap-2"><button disabled={!newDisc.name.trim()} className={btn} onClick={saveDisc}>Guardar disciplina</button><button className="text-slate-500" onClick={() => setNewDisc(null)}>Cancelar</button></div>
       </div>}
 
-      {disciplines.map(d => <Discipline key={d} d={d} list={plans.filter(p => p.discipline === d)} canCfg={canCfg}
+      {disciplines.map(d => <Discipline key={d} d={d} list={plans.filter(p => p.discipline === d)} canCfg={canCfg} labels={labels}
         rule={rules.find(r => r.discipline === d)} hasCombo={rules.some(r => r.is_combo)} onRule={v => saveRule(d, v)}
         onPrice={setPrice} onPatch={patch} onHist={showHist}
         onAdd={async (h, pr, n) => { setMsg(null); const e = await addTier(d, h, pr, n); if (e) setMsg(e); else load(); }} />)}
@@ -138,7 +149,7 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   );
 }
 
-function Discipline({ d, list, canCfg, rule, hasCombo, onRule, onPrice, onPatch, onHist, onAdd }: { d: string; list: Plan[]; canCfg: boolean;
+function Discipline({ d, list, canCfg, labels, rule, hasCombo, onRule, onPrice, onPatch, onHist, onAdd }: { d: string; list: Plan[]; canCfg: boolean; labels: string[];
   rule?: DiscRule; hasCombo: boolean; onRule: (v: Partial<DiscRule>) => void;
   onPrice: (p: Plan, v: string) => void; onPatch: (p: Plan, v: Partial<Plan>) => void; onHist: (p: Plan) => void; onAdd: (h: string, price: string, name: string) => void }) {
   const [row, setRow] = useState({ hours: '', price: '', name: '' });
@@ -157,12 +168,14 @@ function Discipline({ d, list, canCfg, rule, hasCombo, onRule, onPrice, onPatch,
           <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
             <td className="px-3 py-1.5">{canCfg ? <input className="w-56 rounded border px-2 py-1" defaultValue={p.name} onBlur={e => e.target.value.trim() && e.target.value !== p.name && onPatch(p, { name: e.target.value.trim() })} /> : p.name}</td>
             <td className="px-3 py-1.5">{p.hours_per_week ?? '—'}</td>
-            <td className="px-3 py-1.5 text-right">{p.use_table && p.hours_per_week != null
-              ? <span>{p.price_cents != null ? formatMXN(p.price_cents) : <span className="text-red-600">no está en la tabla</span>} <span className="text-xs text-slate-400">tabla</span>
+            <td className="px-3 py-1.5 text-right">{p.use_table && (p.hours_per_week != null || p.table_label)
+              ? <span>{p.price_cents != null ? formatMXN(p.price_cents) : <span className="text-red-600">no está en la tabla</span>} <span className="text-xs text-slate-400">tabla{p.table_label ? ` · ${p.table_label}` : ''}</span>
                   {canCfg && <button className="ml-2 text-xs text-brand" onClick={() => { const v = prompt('Precio propio para esta opción (deja de usar la tabla):'); if (v) onPrice(p, v); }}>precio propio</button>}</span>
               : canCfg ? <span><input key={p.price_cents ?? 'x'} className="w-28 rounded border px-2 py-1 text-right" placeholder="sin precio"
                   defaultValue={p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''} onBlur={e => onPrice(p, e.target.value)} />
-                  {p.hours_per_week != null && <button className="ml-2 text-xs text-brand" onClick={() => onPatch(p, { use_table: true })}>usar tabla</button>}</span>
+                  {p.hours_per_week != null ? <button className="ml-2 text-xs text-brand" onClick={() => onPatch(p, { use_table: true })}>usar tabla</button>
+                    : labels.length > 0 && <select className="ml-2 rounded border px-1 text-xs" value="" onChange={e => e.target.value && onPatch(p, { use_table: true, table_label: e.target.value })}>
+                      <option value="">usar tabla…</option>{labels.map(l => <option key={l} value={l}>{l}</option>)}</select>}</span>
               : p.price_cents != null ? formatMXN(p.price_cents) : '—'}</td>
             <td className="px-3 py-1.5 text-right">{p.active_subs}</td>
             <td className="space-x-3 whitespace-nowrap px-3 py-1.5 text-right text-xs"><button className="text-brand" onClick={() => onHist(p)}>Historial</button>
@@ -182,27 +195,35 @@ function Discipline({ d, list, canCfg, rule, hasCombo, onRule, onPrice, onPatch,
   );
 }
 
-// ---------------------------------------------------------------- Tabla de precios por horas
-interface HP { hours: number; effective_month: string; price_cents: number | null; created_at: string }
+// ---------------------------------------------------------------- Tabla de precios (horas y texto)
+interface HP { hours: number | null; label: string | null; effective_month: string; price_cents: number | null; created_at: string }
+const keyOf = (r: { hours: number | null; label: string | null }) => r.label ? `t:${r.label.toLowerCase()}` : `h:${Number(r.hours)}`;
 function PriceTable({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [rows, setRows] = useState<HP[]>([]); const [msg, setMsg] = useState<string | null>(null);
-  const [from, setFrom] = useState(thisMonth()); const [add, setAdd] = useState({ hours: '', price: '' }); const [hist, setHist] = useState<number | null>(null);
+  const [from, setFrom] = useState(thisMonth()); const [add, setAdd] = useState({ key: '', price: '' }); const [hist, setHist] = useState<string | null>(null);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('hour_prices').select('hours,effective_month,price_cents,created_at').eq('company_id', co)
-      .order('hours').order('effective_month', { ascending: false }).order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('hour_prices').select('hours,label,effective_month,price_cents,created_at').eq('company_id', co)
+      .order('effective_month', { ascending: false }).order('created_at', { ascending: false });
     if (error) setMsg(error.message); setRows((data as HP[]) ?? []);
   }, [co]);
   useEffect(() => { load(); }, [load]);
   const ym = thisMonth();
-  const hoursList = [...new Set(rows.map(r => Number(r.hours)))].sort((a, b) => a - b);
-  const current = (h: number) => rows.find(r => Number(r.hours) === h && r.effective_month.slice(0, 7) <= ym);
-  const upcoming = (h: number) => rows.find(r => Number(r.hours) === h && r.effective_month.slice(0, 7) > ym);
-  async function save(h: number, price: string | null) {
+  const keys: { key: string; hours: number | null; label: string | null }[] = [];
+  for (const r of rows) if (!keys.some(k => k.key === keyOf(r))) keys.push({ key: keyOf(r), hours: r.hours === null ? null : Number(r.hours), label: r.label });
+  keys.sort((a, b) => (a.label ? 1 : 0) - (b.label ? 1 : 0) || (a.hours ?? 0) - (b.hours ?? 0));
+  const current = (k: string) => rows.find(r => keyOf(r) === k && r.effective_month.slice(0, 7) <= ym);
+  const upcoming = (k: string) => rows.find(r => keyOf(r) === k && r.effective_month.slice(0, 7) > ym);
+  async function save(k: { hours: number | null; label: string | null }, price: string | null) {
     setMsg(null);
-    const { error } = await supabase.from('hour_prices').insert({ company_id: co, hours: h, effective_month: `${from}-01`, price_cents: price === null ? null : toCents(price) });
+    const { error } = await supabase.from('hour_prices').insert({ company_id: co, hours: k.label ? null : k.hours, label: k.label, effective_month: `${from}-01`,
+      price_cents: price === null ? null : toCents(price) });
     if (error) setMsg(error.message); else load();
   }
-  const frac = (h: number) => (h % 1 ? `${Math.floor(h) || ''} ½`.trim() : String(h));
+  function addRow() {
+    const v = add.key.trim().replace(',', '.'); const n = Number(v);
+    save(v && !isNaN(n) && n > 0 ? { hours: n, label: null } : { hours: null, label: add.key.trim() }, add.price); setAdd({ key: '', price: '' });
+  }
+  const show = (k: { hours: number | null; label: string | null }) => k.label ?? (k.hours! % 1 ? `${Math.floor(k.hours!) || ''} ½`.trim() : String(k.hours));
   return (
     <div className="space-y-3">
       {canCfg && <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 text-sm shadow-sm">
@@ -210,31 +231,31 @@ function PriceTable({ co, canCfg }: { co: string; canCfg: boolean }) {
         <span className="text-xs text-slate-500">· los meses anteriores conservan su precio. Para subir precios del próximo ciclo, elige el mes en que empiezan.</span></div>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full max-w-2xl text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Horas por semana</th><th className="px-3 py-2 text-right">Costo por mes</th>
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Horas por semana / plan</th><th className="px-3 py-2 text-right">Costo por mes</th>
             <th className="px-3 py-2">Vigente desde</th><th className="px-3 py-2"></th></tr></thead>
-          <tbody>{hoursList.map(h => { const c = current(h), u = upcoming(h); return (
-            <tr key={h} className="border-t">
-              <td className="px-3 py-1.5 font-medium">{frac(h)}</td>
+          <tbody>{keys.map(k => { const c = current(k.key), u = upcoming(k.key); if (!c && !u) return null; return (
+            <tr key={k.key} className={`border-t ${k.label ? 'bg-purple-50/40' : ''}`}>
+              <td className="px-3 py-1.5 font-medium">{show(k)}</td>
               <td className="px-3 py-1.5 text-right">{canCfg ? <input key={`${c?.price_cents}-${c?.created_at}`} className="w-28 rounded border px-2 py-1 text-right"
-                defaultValue={c?.price_cents != null ? (c.price_cents / 100).toFixed(2) : ''} placeholder="—" onBlur={e => e.target.value && toCents(e.target.value) !== c?.price_cents && save(h, e.target.value)} />
+                defaultValue={c?.price_cents != null ? (c.price_cents / 100).toFixed(2) : ''} placeholder="—" onBlur={e => e.target.value && toCents(e.target.value) !== c?.price_cents && save(k, e.target.value)} />
                 : c?.price_cents != null ? formatMXN(c.price_cents) : '—'}</td>
               <td className="px-3 py-1.5 text-xs text-slate-500">{c?.effective_month.slice(0, 7) ?? '—'}{u && <span className="ml-2 text-amber-700">→ {u.price_cents != null ? formatMXN(u.price_cents) : 'se quita'} desde {u.effective_month.slice(0, 7)}</span>}</td>
-              <td className="space-x-2 px-3 py-1.5 text-right text-xs"><button className="text-brand" onClick={() => setHist(hist === h ? null : h)}>Historial</button>
-                {canCfg && c?.price_cents != null && <button className="text-red-600" onClick={() => confirm(`¿Quitar la opción de ${frac(h)} h desde ${from}?`) && save(h, null)}>Quitar</button>}</td>
+              <td className="space-x-2 px-3 py-1.5 text-right text-xs"><button className="text-brand" onClick={() => setHist(hist === k.key ? null : k.key)}>Historial</button>
+                {canCfg && c?.price_cents != null && <button className="text-red-600" onClick={() => confirm(`¿Quitar "${show(k)}" desde ${from}?`) && save(k, null)}>Quitar</button>}</td>
             </tr>); })}
             {canCfg && <tr className="border-t bg-slate-50/60">
-              <td className="px-3 py-1.5"><input type="number" step="0.5" min={0.5} className="w-20 rounded border px-2 py-1" placeholder="horas" value={add.hours} onChange={e => setAdd({ ...add, hours: e.target.value })} /></td>
+              <td className="px-3 py-1.5"><input className="w-56 rounded border px-2 py-1" placeholder="horas (3.5) o texto (Equipo)" value={add.key} onChange={e => setAdd({ ...add, key: e.target.value })} /></td>
               <td className="px-3 py-1.5 text-right"><input className="w-28 rounded border px-2 py-1 text-right" placeholder="$" value={add.price} onChange={e => setAdd({ ...add, price: e.target.value })} /></td>
-              <td colSpan={2} className="px-3 py-1.5 text-right"><button disabled={!add.hours || !add.price} className="text-brand disabled:text-slate-300"
-                onClick={() => { save(+add.hours, add.price); setAdd({ hours: '', price: '' }); }}>+ Agregar horas</button></td></tr>}
+              <td colSpan={2} className="px-3 py-1.5 text-right"><button disabled={!add.key.trim() || !add.price} className="text-brand disabled:text-slate-300" onClick={addRow}>+ Agregar renglón</button></td></tr>}
           </tbody>
         </table>
       </div>
-      {hist !== null && <div className="rounded-xl bg-white p-3 text-xs shadow-sm"><b>{frac(hist)} h</b>{rows.filter(r => Number(r.hours) === hist).map((r, i) =>
+      {hist !== null && <div className="rounded-xl bg-white p-3 text-xs shadow-sm"><b>{show(keys.find(k => k.key === hist)!)}</b>{rows.filter(r => keyOf(r) === hist).map((r, i) =>
         <p key={i}>Desde {r.effective_month.slice(0, 7)}: {r.price_cents != null ? formatMXN(r.price_cents) : 'se quitó'} <span className="text-slate-400">(capturado {r.created_at.slice(0, 10)})</span></p>)}</div>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      <p className="text-xs text-slate-500">Todos los planes por horas de la sucursal toman su precio de aquí, sin importar la disciplina. Equipo y Equipo libre llevan precio propio en Planes por disciplina.
-        Hermanos (15 %), pronto pago (5 %) y recargos (5 % día 6, 10 % día 11) se calculan sobre este precio normal; se ajustan en Reglas.</p>
+      <p className="text-xs text-slate-500">Escribe un número para un renglón por horas o un texto para planes como Equipo, Pre-Equipo o Equipo libre en adelante.
+        Los planes por horas toman su precio de aquí sin importar la disciplina; los planes de texto se ligan en Planes por disciplina con "usar tabla".
+        Hermanos (15 %), pronto pago (5 %) y recargos se calculan sobre este precio normal; se ajustan en Reglas.</p>
     </div>
   );
 }

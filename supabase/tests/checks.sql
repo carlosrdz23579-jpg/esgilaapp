@@ -826,3 +826,21 @@ begin
   reset role;
   raise notice 'OK: tabla de precios por horas';
 end $$;
+
+-- 0040: renglones de texto en la tabla de precios
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        eq uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.hour_prices (company_id, label, effective_month, price_cents) values (vin, 'Pre-Equipo', '2026-08-01', 309000);
+  insert into public.plans (company_id, discipline, name, table_label) values (vin, 'Pre-Equipo', 'Plan Pre-Equipo', 'pre-equipo') returning id into eq;
+  if app.plan_price(eq, '2026-12-01') <> 309000 then raise exception 'plan por texto no toma la tabla'; end if;
+  ok := false; begin insert into public.hour_prices (company_id, hours, label, effective_month, price_cents) values (vin, 3, 'x', '2026-08-01', 1); exception when others then ok := true; end;
+  if not ok then raise exception 'renglón con horas y texto a la vez'; end if;
+  if app.hour_price(vin, 3, '2026-12-01') <> 201500 then raise exception 'se descompuso la tabla por horas'; end if;
+  reset role;
+  raise notice 'OK: tabla con renglones de texto';
+end $$;
