@@ -264,6 +264,15 @@ function PriceTable({ co, canCfg }: { co: string; canCfg: boolean }) {
 interface G { id: string; activity: string; start_time: string; end_time: string; capacity: number | null; discipline: string | null; is_active: boolean }
 function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [groups, setGroups] = useState<G[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
+  const [discs, setDiscs] = useState<string[]>([]);
+  useEffect(() => {
+    Promise.all([supabase.from('plans').select('discipline').eq('company_id', co).eq('is_active', true),
+      supabase.from('discipline_rules').select('discipline,is_combo').eq('company_id', co).eq('is_combo', true)]).then(([p, r]) => {
+      const combo = new Set((r.data ?? []).map(x => x.discipline));
+      setDiscs([...new Set((p.data ?? []).map(x => x.discipline as string))].filter(d => !combo.has(d)).sort());
+    });
+  }, [co]);
+  const discOptions = (cur: string | null) => [...new Set([...discs, ...(cur ? [cur] : [])])];
   const [msg, setMsg] = useState<string | null>(null); const [form, setForm] = useState({ activity: '', start: '16:00', end: '17:00', capacity: '', discipline: '' });
   const load = useCallback(async () => {
     const { data, error } = await supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,discipline,is_active').eq('company_id', co).order('activity').order('start_time');
@@ -291,7 +300,8 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
           <tbody>{groups.map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity; return (
             <tr key={g.id} className="border-t">
               <td className="px-3 py-2 font-medium">{g.activity}</td>
-              <td className="px-3 py-2">{canCfg ? <input className="w-32 rounded border px-2 py-1" defaultValue={g.discipline ?? ''} onBlur={e => e.target.value !== (g.discipline ?? '') && patch(g, { discipline: e.target.value || null })} /> : g.discipline ?? '—'}</td>
+              <td className="px-3 py-2">{canCfg ? <select className="rounded border px-2 py-1" value={g.discipline ?? ''} onChange={e => patch(g, { discipline: e.target.value || null })}>
+                <option value="">— sin disciplina —</option>{discOptions(g.discipline).map(d => <option key={d} value={d}>{d}</option>)}</select> : g.discipline ?? '—'}</td>
               <td className="px-3 py-2">{g.start_time}–{g.end_time}</td>
               <td className={`px-3 py-2 ${full ? 'font-semibold text-red-700' : ''}`}>{t}{g.capacity ? ` de ${g.capacity}` : ''}{full ? ' · lleno' : ''}</td>
               <td className="px-3 py-2">{canCfg ? <input type="number" min={1} className="w-20 rounded border px-2 py-1" defaultValue={g.capacity ?? ''} placeholder="sin límite"
@@ -302,14 +312,15 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
       </div>
       {canCfg && <form onSubmit={add} className="flex flex-wrap items-end gap-2 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Nuevo grupo<input required className={`${field} block w-44`} placeholder="Baby Gym 3" value={form.activity} onChange={e => setForm({ ...form, activity: e.target.value })} /></label>
-        <label className="text-xs">Disciplina<input className={`${field} block w-36`} value={form.discipline} onChange={e => setForm({ ...form, discipline: e.target.value })} /></label>
+        <label className="text-xs">Disciplina<select className={`${field} block`} value={form.discipline} onChange={e => setForm({ ...form, discipline: e.target.value })}>
+          <option value="">— elige —</option>{discs.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
         <label className="text-xs">Inicio<input type="time" className={`${field} block`} value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} /></label>
         <label className="text-xs">Fin<input type="time" className={`${field} block`} value={form.end} onChange={e => setForm({ ...form, end: e.target.value })} /></label>
         <label className="text-xs">Cupo<input type="number" min={1} className={`${field} block w-20`} value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })} /></label>
         <button className={btn}>Agregar grupo</button>
       </form>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      <p className="text-xs text-slate-500">Los grupos que vienen de EVO aparecen aquí solos. El cupo cuenta a las alumnas con plan asignado en ese grupo; si está lleno, no deja asignar a otra hasta que subas el cupo.</p>
+      <p className="text-xs text-slate-500">Las disciplinas salen de Planes por disciplina; si falta una, créala ahí primero. Los grupos que vienen de EVO aparecen aquí solos. El cupo cuenta a las alumnas con plan asignado en ese grupo; si está lleno, no deja asignar a otra hasta que subas el cupo.</p>
     </div>
   );
 }
