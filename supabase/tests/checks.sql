@@ -356,13 +356,15 @@ begin
   insert into public.payroll_runs (company_id, period_start, period_end, nominal_pay_date) values (car, hoy - 40, hoy - 26, hoy - 25) returning id into run;
   v := public.save_payroll_version(run, 'con préstamo', jsonb_build_array(jsonb_build_object('employee_id', c1, 'pay_date', hoy - 25,
         'gross_cents', 200000, 'deduction_cents', 60000, 'net_cents', 140000,
-        'detail', jsonb_build_object('loanLines', jsonb_build_array(jsonb_build_object('loan_id', loan, 'amount', '60000')))),
+        'detail', jsonb_build_object('loanLines', jsonb_build_array(jsonb_build_object('loan_id', loan, 'amount', '60000'),
+                                                              jsonb_build_object('loan_id', ploan, 'amount', '50000')))),
         jsonb_build_object('employee_id', hc, 'pay_date', hoy - 25, 'gross_cents', 1, 'deduction_cents', 0, 'net_cents', 1, 'detail', '{}'::jsonb)), '{}');
   reset role;
   perform set_config('request.jwt.claim.sub', dir::text, true);
   set local role authenticated;
   perform public.set_payroll_status(run, 'autorizar');
   if app.loan_paid(loan) <> 60000 then raise exception 'no registró el abono: %', app.loan_paid(loan); end if;
+  if app.loan_paid(ploan) <> 50000 then raise exception 'no registró el segundo préstamo: %', app.loan_paid(ploan); end if;
   perform public.set_payroll_status(run, 'reabrir');
   if app.loan_paid(loan) <> 0 then raise exception 'no revirtió el abono'; end if;
   perform public.set_payroll_status(run, 'autorizar');
