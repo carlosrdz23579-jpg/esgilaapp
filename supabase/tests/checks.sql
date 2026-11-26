@@ -869,3 +869,21 @@ begin
   reset role;
   raise notice 'OK: cupo por día';
 end $$;
+
+-- 0042: prospectos y clase muestra
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        st uuid; tc uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.students (company_id, full_name, kind, email, gender, guardian_name) values (vin, 'Prospecto', 'prospecto', 'mama@correo.com', 'femenino', 'Mamá') returning id into st;
+  ok := false; begin update public.students set email = 'no-es-correo' where id = st; exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó un correo inválido'; end if;
+  insert into public.trial_classes (company_id, student_id, date) values (vin, st, app.today_mx()) returning id into tc;
+  update public.trial_classes set attended = true, comments = 'Le gustó' where id = tc;
+  update public.students set kind = 'alumna', became_student_on = app.today_mx() where id = st;
+  reset role;
+  raise notice 'OK: prospectos y clase muestra';
+end $$;

@@ -5,12 +5,13 @@ import { usePersisted } from '../lib/usePersisted';
 import { Modal } from './ui';
 import { parseEvoSheet, type EvoReport } from '@domain/evo';
 import StudentPlans from './StudentPlans';
+import StudentProfile, { Photo, uploadPhoto, GENDERS, SOURCES, type StuFull } from './StudentProfile';
 import { useGroupLoads, loadLabel, dayFull } from '../lib/groupLoad';
 
 interface Cls { id: string; company_id: string; activity: string; start_time: string; end_time: string; duration_override_min: number | null;
   detected_min: number; duration_min: number; is_active: boolean }
-interface Stu { id: string; company_id: string; evo_id: string | null; full_name: string; phone: string | null; birth_date: string | null;
-  enrolled_on: string | null; is_active: boolean }
+type Stu = StuFull;
+interface Trial { student_id: string; class_id: string | null; date: string; attended: boolean | null; id: string }
 interface Enr { student_id: string; class_id: string; month: string; weekdays: number[]; plan?: { start: string; end: string | null } }
 interface Att { student_id: string; class_id: string; date: string; arrival: string | null; extra: boolean; annulled: boolean; created_at: string }
 interface Note { id: string; student_id: string; body: string; author_name: string | null; created_by: string; created_at: string; deleted_at: string | null }
@@ -92,10 +93,12 @@ export default function Students() {
 function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
   const [date, setDate] = useState(todayMx());
   const [att, setAtt] = useState<Att[]>([]); const [msg, setMsg] = useState<string | null>(null);
+  const [trials, setTrials] = useState<Trial[]>([]);
+  useEffect(() => { supabase.from('trial_classes').select('id,student_id,class_id,date,attended').eq('date', date).is('cancelled_at', null).then(r => setTrials((r.data as Trial[]) ?? [])); }, [date]);
   const [times, setTimes] = useState<Record<string, string>>({}); const [adding, setAdding] = useState(''); const [busy, setBusy] = useState(false);
   const wd = dow(date);
   // Clases con alumnas ese día de la semana, la más cercana a la hora actual primero.
-  const dayClasses = useMemo(() => classes.filter(c => c.is_active && rosterFor(enr, c.id, date).some(e => e.weekdays.includes(wd))), [classes, enr, date, wd]);
+  const dayClasses = useMemo(() => classes.filter(c => c.is_active && (rosterFor(enr, c.id, date).some(e => e.weekdays.includes(wd)) || trials.some(t => t.class_id === c.id))), [classes, enr, date, wd, trials]);
   const [classId, setClassId] = useState('');
   useEffect(() => {
     if (dayClasses.some(c => c.id === classId)) return;
@@ -113,7 +116,8 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
 
   const sById = useMemo(() => new Map(students.map(s => [s.id, s])), [students]);
   const roster = cls ? rosterFor(enr, cls.id, date) : [];
-  const due = roster.filter(e => e.weekdays.includes(wd)).map(e => e.student_id);
+  const trialIds = cls ? trials.filter(t => t.class_id === cls.id).map(t => t.student_id) : [];
+  const due = [...new Set([...roster.filter(e => e.weekdays.includes(wd)).map(e => e.student_id), ...trialIds])];
   const extras = att.filter(a => !a.annulled && !due.includes(a.student_id)).map(a => a.student_id);
   const list = [...due, ...extras].map(id => sById.get(id)).filter(Boolean).sort((a, b) => a!.full_name.localeCompare(b!.full_name)) as Stu[];
   const rec = (id: string) => att.find(a => a.student_id === id && !a.annulled);
@@ -123,7 +127,8 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
     if (!cls || !ids.length) return; setBusy(true); setMsg(null);
     const { error } = await supabase.from('student_attendance').insert(ids.map(id => ({
       company_id: cls.company_id, student_id: id, class_id: cls.id, date, arrival: annulled ? null : arrival(id),
-      extra: !due.includes(id), annulled })));
+      extra: !due.includes(id) || trialIds.includes(id), annulled })));
+    for (const id of ids) { const t = trials.find(x => x.student_id === id && x.class_id === cls.id); if (t && !annulled) await supabase.from('trial_classes').update({ attended: !!arrival(id) }).eq('id', t.id); }
     setBusy(false); if (error) setMsg(error.message); else loadAtt();
   }
   const pending = list.filter(s => !rec(s.id)).map(s => s.id);
@@ -150,7 +155,8 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
                 return (
                   <tr key={s.id} className="border-t">
                     <td className="px-3 py-2"><button className="text-left hover:text-brand" onClick={() => onOpen(s)}>{s.full_name}</button>
-                      {!due.includes(s.id) && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">no le tocaba</span>}</td>
+                      {trialIds.includes(s.id) ? <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs text-purple-700">clase muestra</span>
+                        : !due.includes(s.id) && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">no le tocaba</span>}</td>
                     <td className="px-3 py-2"><input type="time" className="rounded border px-2 py-1" value={t} onChange={e => setTimes({ ...times, [s.id]: e.target.value })} /></td>
                     <td className="px-3 py-2">{!r ? <span className="text-slate-400">sin marcar</span> : r.arrival
                       ? <span className="text-green-700">✓ llegó {r.arrival}{r.arrival > cls.start_time ? <span className="ml-1 text-amber-700">(tarde)</span> : null}</span>
@@ -183,7 +189,10 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
 // ---------------------------------------------------------------- Lista de alumnas
 function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
   const { companies, companyId } = useAuth();
-  const [f, setF] = useState({ company_id: companyId !== 'all' ? companyId : '', full_name: '', birth_date: '', phone: '', enrolled_on: todayMx() });
+  const [f, setF] = useState({ company_id: companyId !== 'all' ? companyId : '', full_name: '', birth_date: '', phone: '', enrolled_on: todayMx(),
+    email: '', gender: '', curp: '', guardian_name: '', guardian_phone: '', source: '', notes: '' });
+  const [kind, setKind] = useState<'alumna' | 'prospecto'>('alumna'); const [photo, setPhoto] = useState<File | null>(null);
+  const [trialDate, setTrialDate] = useState(todayMx());
   const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [classId, setClassId] = useState(''); const [days, setDays] = useState<number[]>([]);
   const [plans, setPlans] = useState<{ id: string; discipline: string; name: string; price_cents: number | null; kind: string }[]>([]);
   const [groups, setGroups] = useState<{ id: string; activity: string; start_time: string; end_time: string; capacity: number | null; discipline: string | null }[]>([]);
@@ -206,12 +215,21 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
 
   async function save(ev: React.FormEvent) {
     ev.preventDefault(); setMsg(null);
-    if (!planId || !classId || !days.length) return setMsg('Elige plan, grupo y los días que viene.');
+    if (kind === 'alumna' && (!planId || !classId || !days.length)) return setMsg('Elige plan, grupo y los días que viene.');
+    if (kind === 'prospecto' && !classId) return setMsg('Elige el grupo de su clase muestra.');
     setBusy(true);
     const { data, error } = await supabase.from('students').insert({ company_id: f.company_id, full_name: f.full_name.trim().replace(/\s+/g, ' '),
-      birth_date: f.birth_date || null, phone: f.phone.trim() || null, enrolled_on: f.enrolled_on || null }).select('*').single();
-    if (error) { setBusy(false); return setMsg(`No se pudo dar de alta: ${error.message}`); }
+      birth_date: f.birth_date || null, phone: f.phone.trim() || null, enrolled_on: kind === 'alumna' ? f.enrolled_on || null : null, kind,
+      email: f.email.trim() || null, gender: f.gender || null, curp: f.curp.trim().toUpperCase() || null, guardian_name: f.guardian_name.trim() || null,
+      guardian_phone: f.guardian_phone.trim() || null, source: f.source || null, notes: f.notes.trim() || null }).select('*').single();
+    if (error) { setBusy(false); return setMsg(`No se pudo dar de alta: ${error.message.includes('email') ? 'el correo no es válido' : error.message.includes('curp') ? 'la CURP debe tener 18 caracteres' : error.message}`); }
     const st = data as Stu;
+    if (photo) { const e = await uploadPhoto(st, photo); if (e) setMsg(`Se dio de alta, pero no se subió la foto: ${e}`); }
+    if (kind === 'prospecto') {
+      const t = await supabase.from('trial_classes').insert({ company_id: f.company_id, student_id: st.id, class_id: classId, date: trialDate });
+      setBusy(false); if (t.error) setMsg(`Se dio de alta, pero no se agendó la clase muestra: ${t.error.message}`);
+      return onCreated(st);
+    }
     const sub = await supabase.from('subscriptions').insert({ company_id: f.company_id, plan_id: planId, student_id: st.id,
       start_month: `${(f.enrolled_on || todayMx()).slice(0, 7)}-01` }).select('id').single();
     if (sub.error) { setBusy(false); setMsg(`Se dio de alta, pero no se asignó el plan: ${sub.error.message}`); return onCreated(st); }
@@ -222,30 +240,45 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
   }
   return (
     <form onSubmit={save} className="space-y-3 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
+      <div className="inline-flex overflow-hidden rounded-lg border">{(['alumna', 'prospecto'] as const).map(k =>
+        <button type="button" key={k} onClick={() => setKind(k)} className={`px-3 py-1.5 ${kind === k ? 'bg-brand text-white' : ''}`}>{k === 'alumna' ? 'Alumna inscrita' : 'Prospecto (clase muestra)'}</button>)}</div>
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs">Sucursal<select required className={`${field} block`} value={f.company_id} onChange={e => { setF({ ...f, company_id: e.target.value }); setDisc(''); setPlanId(''); setClassId(''); }}>
           <option value="">Elige…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select></label>
         <label className="text-xs">Nombre completo<input required autoFocus className={`${field} block w-64`} value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} /></label>
         <label className="text-xs">Nacimiento<input type="date" className={`${field} block`} value={f.birth_date} onChange={e => setF({ ...f, birth_date: e.target.value })} /></label>
         <label className="text-xs">Teléfono<input className={`${field} block w-36`} value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
-        <label className="text-xs">Inscripción<input type="date" className={`${field} block`} value={f.enrolled_on} onChange={e => setF({ ...f, enrolled_on: e.target.value })} /></label>
+        {kind === 'alumna' && <label className="text-xs">Inscripción<input type="date" className={`${field} block`} value={f.enrolled_on} onChange={e => setF({ ...f, enrolled_on: e.target.value })} /></label>}
       </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs">Correo<input type="email" className={`${field} block w-56`} value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+        <label className="text-xs">Género<select className={`${field} block`} value={f.gender} onChange={e => setF({ ...f, gender: e.target.value })}>
+          <option value="">—</option>{GENDERS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
+        <label className="text-xs">CURP<input maxLength={18} className={`${field} block w-48 uppercase`} value={f.curp} onChange={e => setF({ ...f, curp: e.target.value })} /></label>
+        <label className="text-xs">Mamá/papá o tutor<input className={`${field} block w-48`} value={f.guardian_name} onChange={e => setF({ ...f, guardian_name: e.target.value })} /></label>
+        <label className="text-xs">Teléfono del tutor<input className={`${field} block w-36`} value={f.guardian_phone} onChange={e => setF({ ...f, guardian_phone: e.target.value })} /></label>
+        <label className="text-xs">Cómo nos conoció<select className={`${field} block`} value={f.source} onChange={e => setF({ ...f, source: e.target.value })}>
+          <option value="">—</option>{SOURCES.map(x => <option key={x}>{x}</option>)}</select></label>
+        <label className="text-xs">Foto<input type="file" accept="image/*" capture="environment" className="block text-xs" onChange={e => setPhoto(e.target.files?.[0] ?? null)} /></label>
+      </div>
+      <label className="block text-xs">Observaciones<textarea rows={2} className={`${field} block w-full`} value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></label>
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs">Disciplina<select required className={`${field} block`} value={disc} onChange={e => { setDisc(e.target.value); setPlanId(''); setClassId(''); }}>
           <option value="">Elige…</option>{discs.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
-        <label className="text-xs">Plan<select required disabled={!disc} className={`${field} block`} value={planId} onChange={e => setPlanId(e.target.value)}>
+        {kind === 'alumna' && <label className="text-xs">Plan<select required disabled={!disc} className={`${field} block`} value={planId} onChange={e => setPlanId(e.target.value)}>
           <option value="">Elige…</option>{plans.filter(p => p.discipline === disc && p.kind !== 'familiar').map(p =>
-            <option key={p.id} value={p.id}>{p.name} · {p.price_cents != null ? `$${(p.price_cents / 100).toLocaleString('es-MX')}` : 'sin precio'}</option>)}</select></label>
+            <option key={p.id} value={p.id}>{p.name} · {p.price_cents != null ? `$${(p.price_cents / 100).toLocaleString('es-MX')}` : 'sin precio'}</option>)}</select></label>}
         <label className="text-xs">Grupo<select required disabled={!disc} className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
           <option value="">Elige…</option>{gList.map(g => <option key={g.id} value={g.id}>{g.activity} {g.start_time}–{g.end_time}{g.capacity ? ` · cupo ${g.capacity} por día` : ''}</option>)}</select></label>
-        <div className="text-xs"><span className="block">Días que viene</span><div className="flex gap-2 py-2">{DAYS.map(([d, l]) => {
+        {kind === 'prospecto' && <label className="text-xs">Fecha de la clase muestra<input type="date" className={`${field} block`} value={trialDate} onChange={e => setTrialDate(e.target.value)} /></label>}
+        {kind === 'alumna' && <div className="text-xs"><span className="block">Días que viene</span><div className="flex gap-2 py-2">{DAYS.map(([d, l]) => {
           const full = !!selG && dayFull(loads[selG.id], selG.capacity, d) && !days.includes(d);
           return <label key={d} className={`flex items-center gap-1 ${full ? 'text-red-400 line-through' : ''}`} title={full ? 'Lleno ese día' : ''}>
             <input type="checkbox" disabled={full} checked={days.includes(d)} onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{l}
-            {selG?.capacity ? <span className="text-[10px] text-slate-400">{loads[selG.id]?.[d] ?? 0}/{selG.capacity}</span> : null}</label>; })}</div></div>
+            {selG?.capacity ? <span className="text-[10px] text-slate-400">{loads[selG.id]?.[d] ?? 0}/{selG.capacity}</span> : null}</label>; })}</div></div>}
       </div>
       {f.company_id && !discs.length && <p className="text-xs text-amber-700">Esta sucursal aún no tiene planes: créalos en Cobranza → Planes por disciplina.</p>}
-      <div className="flex items-center gap-3"><button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">{busy ? 'Guardando…' : 'Dar de alta'}</button>
+      <div className="flex items-center gap-3"><button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">{busy ? 'Guardando…' : kind === 'alumna' ? 'Dar de alta' : 'Registrar prospecto'}</button>
         <span className="text-xs text-slate-500">Para doble disciplina o hermanas, termínalo en su ficha (se abre al guardar).</span></div>
       {msg && <p className="rounded bg-red-50 p-2 text-red-700">{msg}</p>}
     </form>
@@ -254,15 +287,18 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
 
 function StudentList({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
   const { can } = useAuth(); const canAdd = can('students', 'configure') || can('billing', 'edit');
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState(false); const [kind, setKind] = usePersisted<'alumna' | 'prospecto'>('alumnas.tipo', 'alumna');
   const [q, setQ] = useState(''); const [fClass, setFClass] = useState(''); const [onlyActive, setOnlyActive] = useState(true);
   const today = todayMx();
   const cur = useMemo(() => classes.flatMap(c => rosterFor(enr, c.id, today).map(e => ({ ...e, c }))), [classes, enr, today]);
-  const rows = students.filter(s => (!onlyActive || s.is_active) && (!q || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.evo_id === q)
+  const rows = students.filter(s => (s.kind ?? 'alumna') === kind && (!onlyActive || s.is_active) && (!q || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.evo_id === q)
     && (!fClass || cur.some(e => e.student_id === s.id && e.class_id === fClass)));
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex overflow-hidden rounded-lg border text-sm">{(['alumna', 'prospecto'] as const).map(k =>
+          <button key={k} onClick={() => setKind(k)} className={`px-3 py-2 ${kind === k ? 'bg-brand text-white' : 'bg-white'}`}>
+            {k === 'alumna' ? 'Alumnas' : 'Prospectos'} ({students.filter(x => (x.kind ?? 'alumna') === k && x.is_active).length})</button>)}</div>
         <input className={field} placeholder="Buscar por nombre o ID de EVO" value={q} onChange={e => setQ(e.target.value)} />
         <select className={field} value={fClass} onChange={e => setFClass(e.target.value)}><option value="">Todas las clases</option>
           {classes.map(c => <option key={c.id} value={c.id}>{c.activity} · {c.start_time}</option>)}</select>
@@ -277,7 +313,7 @@ function StudentList({ classes, students, enr, onOpen }: { classes: Cls[]; stude
             <th className="px-3 py-2">Clases</th><th className="px-3 py-2">Teléfono</th><th className="px-3 py-2">ID EVO</th></tr></thead>
           <tbody>{rows.map(s => (
             <tr key={s.id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => onOpen(s)}>
-              <td className="px-3 py-2 font-medium">{s.full_name}{!s.is_active && <span className="ml-2 text-xs text-slate-400">inactiva</span>}</td>
+              <td className="px-3 py-2 font-medium"><span className="flex items-center gap-2"><Photo path={s.photo_path} size={28} />{s.full_name}{!s.is_active && <span className="text-xs text-slate-400">inactiva</span>}</span></td>
               <td className="px-3 py-2">{age(s.birth_date)}</td>
               <td className="px-3 py-2">{cur.filter(e => e.student_id === s.id).map(e => `${e.c.activity} ${e.c.start_time} (${e.weekdays.map(w => WD[w]).join(', ')})`).join(' · ') || '—'}</td>
               <td className="px-3 py-2">{s.phone ?? '—'}</td><td className="px-3 py-2 text-slate-500">{s.evo_id ?? '—'}</td>
@@ -438,17 +474,12 @@ function StudentCard({ s, classes, enr, canNotes, canCfg, onClose, onChanged }:
   }
 
   return (
-    <Modal title={s.full_name} onClose={onClose} wide>
-      <div className="grid gap-2 text-sm sm:grid-cols-4">
-        <p><span className="text-slate-500">Edad:</span> {age(s.birth_date)}</p>
-        <p><span className="text-slate-500">Teléfono:</span> {s.phone ?? '—'}</p>
-        <p><span className="text-slate-500">Inscripción:</span> {s.enrolled_on ?? '—'}</p>
-        <p><span className="text-slate-500">ID EVO:</span> {s.evo_id ?? '—'}</p>
-      </div>
+    <Modal title={`${s.full_name} · ${age(s.birth_date)}`} onClose={onClose} wide>
+      <StudentProfile s={s} onChanged={onChanged} />
       <div className="text-sm">{mine.length ? mine.map(e => <span key={e.class_id} className="mr-2 rounded-full bg-slate-100 px-2 py-1">{e.c.activity} {e.c.start_time} · {e.weekdays.map(w => WD[w]).join(', ')}</span>)
         : <span className="text-slate-400">Sin clases ese mes</span>}</div>
 
-      <StudentPlans s={s} onChanged={onChanged} />
+      {s.kind !== 'prospecto' && <StudentPlans s={s} onChanged={onChanged} />}
 
       <div className="space-y-2 border-t pt-3">
         <div className="flex flex-wrap items-center gap-3"><h4 className="text-sm font-semibold">Asistencia</h4>
