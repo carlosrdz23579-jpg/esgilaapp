@@ -728,7 +728,7 @@ begin
   insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (sub, s1, cl, '{1,3}');
   -- cupo lleno
   insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, s3, '2026-12-01') returning id into s3;
-  ok := false; begin insert into public.subscription_members (subscription_id, student_id, class_id) values (s3, (select student_id from public.subscriptions where id = s3), cl); exception when others then ok := true; end;
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (s3, (select student_id from public.subscriptions where id = s3), cl, '{1}'); exception when others then ok := true; end;
   if not ok then raise exception 'rebasó el cupo del grupo'; end if;
   -- familiar
   insert into public.subscriptions (company_id, plan_id, family_id, start_month) values (vin, fpl, fam, '2026-12-01') returning id into fsub;
@@ -843,4 +843,29 @@ begin
   if app.hour_price(vin, 3, '2026-12-01') <> 201500 then raise exception 'se descompuso la tabla por horas'; end if;
   reset role;
   raise notice 'OK: tabla con renglones de texto';
+end $$;
+
+-- 0041: cupo por día
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid := (select id from public.plans where company_id = vin and name = '2 horas por semana' limit 1);
+        cl uuid; a uuid; b uuid; c uuid; sa uuid; sb uuid; sc uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.class_groups (company_id, activity, start_time, end_time, capacity) values (vin, 'Cupo por día', '16:00', '17:00', 1) returning id into cl;
+  insert into public.students (company_id, full_name) values (vin, 'Lunes-Miércoles') returning id into a;
+  insert into public.students (company_id, full_name) values (vin, 'Martes-Jueves') returning id into b;
+  insert into public.students (company_id, full_name) values (vin, 'Otra de lunes') returning id into c;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, a, date_trunc('month', app.today_mx())) returning id into sa;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, b, date_trunc('month', app.today_mx())) returning id into sb;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, c, date_trunc('month', app.today_mx())) returning id into sc;
+  insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (sa, a, cl, '{1,3}');
+  insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (sb, b, cl, '{2,4}');   -- otros días: sí cabe
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (sc, c, cl, '{1}'); exception when others then ok := true; end;
+  if not ok then raise exception 'rebasó el cupo del lunes'; end if;
+  if (select taken from public.group_load(cl, app.today_mx()) where weekday = 1) <> 1 then raise exception 'ocupación del lunes'; end if;
+  reset role;
+  raise notice 'OK: cupo por día';
 end $$;

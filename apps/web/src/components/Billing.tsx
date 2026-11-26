@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
 import { formatMXN } from '../lib/money';
+import { useGroupLoads, loadLabel } from '../lib/groupLoad';
 
 const field = 'rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-3 py-2 text-sm text-white disabled:opacity-50';
@@ -263,7 +264,7 @@ function PriceTable({ co, canCfg }: { co: string; canCfg: boolean }) {
 // ---------------------------------------------------------------- Grupos
 interface G { id: string; activity: string; start_time: string; end_time: string; capacity: number | null; discipline: string | null; is_active: boolean }
 function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
-  const [groups, setGroups] = useState<G[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
+  const [groups, setGroups] = useState<G[]>([]);
   const [discs, setDiscs] = useState<string[]>([]);
   useEffect(() => {
     Promise.all([supabase.from('plans').select('discipline').eq('company_id', co).eq('is_active', true),
@@ -277,12 +278,10 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
   const load = useCallback(async () => {
     const { data, error } = await supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,discipline,is_active').eq('company_id', co).order('activity').order('start_time');
     if (error) return setMsg(error.message);
-    const gs = (data as G[]) ?? []; setGroups(gs);
-    const m = `${thisMonth()}-01`;
-    const counts = await Promise.all(gs.map(g => supabase.rpc('group_taken', { p_class: g.id, p_month: m })));
-    setTaken(Object.fromEntries(gs.map((g, i) => [g.id, (counts[i].data as number) ?? 0])));
+    setGroups((data as G[]) ?? []);
   }, [co]);
   useEffect(() => { load(); }, [load]);
+  const loads = useGroupLoads(groups.map(g => g.id), thisMonth());
   async function patch(g: G, p: Partial<G>) { const { error } = await supabase.from('class_groups').update(p).eq('id', g.id); if (error) setMsg(error.message); else load(); }
   async function add(ev: React.FormEvent) {
     ev.preventDefault(); setMsg(null);
@@ -296,14 +295,14 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Grupo</th><th className="px-3 py-2">Disciplina</th>
-            <th className="px-3 py-2">Horario</th><th className="px-3 py-2">Ocupados este mes</th><th className="px-3 py-2">Cupo</th><th className="px-3 py-2">Activo</th></tr></thead>
-          <tbody>{groups.map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity; return (
+            <th className="px-3 py-2">Horario</th><th className="px-3 py-2">Ocupados por día este mes</th><th className="px-3 py-2">Cupo por día</th><th className="px-3 py-2">Activo</th></tr></thead>
+          <tbody>{groups.map(g => { const l = loads[g.id]; const full = g.capacity !== null && (l ?? []).some(n => n >= g.capacity!); return (
             <tr key={g.id} className="border-t">
               <td className="px-3 py-2 font-medium">{g.activity}</td>
               <td className="px-3 py-2">{canCfg ? <select className="rounded border px-2 py-1" value={g.discipline ?? ''} onChange={e => patch(g, { discipline: e.target.value || null })}>
                 <option value="">— sin disciplina —</option>{discOptions(g.discipline).map(d => <option key={d} value={d}>{d}</option>)}</select> : g.discipline ?? '—'}</td>
               <td className="px-3 py-2">{g.start_time}–{g.end_time}</td>
-              <td className={`px-3 py-2 ${full ? 'font-semibold text-red-700' : ''}`}>{t}{g.capacity ? ` de ${g.capacity}` : ''}{full ? ' · lleno' : ''}</td>
+              <td className={`px-3 py-2 text-xs ${full ? 'text-red-700' : ''}`}>{loadLabel(l, g.capacity)}{full ? ' · algún día lleno' : ''}</td>
               <td className="px-3 py-2">{canCfg ? <input type="number" min={1} className="w-20 rounded border px-2 py-1" defaultValue={g.capacity ?? ''} placeholder="sin límite"
                 onBlur={e => (e.target.value ? +e.target.value : null) !== g.capacity && patch(g, { capacity: e.target.value ? +e.target.value : null })} /> : g.capacity ?? 'sin límite'}</td>
               <td className="px-3 py-2"><input type="checkbox" disabled={!canCfg} checked={g.is_active} onChange={e => patch(g, { is_active: e.target.checked })} /></td>
@@ -320,7 +319,7 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
         <button className={btn}>Agregar grupo</button>
       </form>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      <p className="text-xs text-slate-500">Las disciplinas salen de Planes por disciplina; si falta una, créala ahí primero. Los grupos que vienen de EVO aparecen aquí solos. El cupo cuenta a las alumnas con plan asignado en ese grupo; si está lleno, no deja asignar a otra hasta que subas el cupo.</p>
+      <p className="text-xs text-slate-500">Las disciplinas salen de Planes por disciplina; si falta una, créala ahí primero. Los grupos que vienen de EVO aparecen aquí solos. El cupo es por día: cuenta a las alumnas de ese grupo en cada día (con plan asignado y las que vienen de EVO). Si un día está lleno, no deja asignar a nadie más ese día.</p>
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { usePersisted } from '../lib/usePersisted';
 import { Modal } from './ui';
 import { parseEvoSheet, type EvoReport } from '@domain/evo';
 import StudentPlans from './StudentPlans';
+import { useGroupLoads, loadLabel, dayFull } from '../lib/groupLoad';
 
 interface Cls { id: string; company_id: string; activity: string; start_time: string; end_time: string; duration_override_min: number | null;
   detected_min: number; duration_min: number; is_active: boolean }
@@ -186,20 +187,19 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
   const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [classId, setClassId] = useState(''); const [days, setDays] = useState<number[]>([]);
   const [plans, setPlans] = useState<{ id: string; discipline: string; name: string; price_cents: number | null; kind: string }[]>([]);
   const [groups, setGroups] = useState<{ id: string; activity: string; start_time: string; end_time: string; capacity: number | null; discipline: string | null }[]>([]);
-  const [combos, setCombos] = useState<string[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
+  const [combos, setCombos] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!f.company_id) return;
     Promise.all([
       supabase.from('plans_v').select('id,discipline,name,price_cents,kind').eq('company_id', f.company_id).eq('is_active', true).order('discipline').order('hours_per_week'),
       supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,discipline').eq('company_id', f.company_id).eq('is_active', true).order('activity').order('start_time'),
-      supabase.from('discipline_rules').select('discipline').eq('company_id', f.company_id).eq('is_combo', true)]).then(async ([p, g, r]) => {
-      setPlans(p.data ?? []); const gs = g.data ?? []; setGroups(gs); setCombos((r.data ?? []).map(x => x.discipline));
-      const m = `${(f.enrolled_on || todayMx()).slice(0, 7)}-01`;
-      const cs = await Promise.all(gs.map(x => supabase.rpc('group_taken', { p_class: x.id, p_month: m })));
-      setTaken(Object.fromEntries(gs.map((x, k) => [x.id, (cs[k].data as number) ?? 0])));
+      supabase.from('discipline_rules').select('discipline').eq('company_id', f.company_id).eq('is_combo', true)]).then(([p, g, r]) => {
+      setPlans(p.data ?? []); setGroups(g.data ?? []); setCombos((r.data ?? []).map(x => x.discipline));
     });
-  }, [f.company_id, f.enrolled_on]);
+  }, [f.company_id]);
+  const loads = useGroupLoads(groups.map(g => g.id), (f.enrolled_on || todayMx()).slice(0, 7));
+  const selG = groups.find(g => g.id === classId);
   const discs = [...new Set(plans.filter(p => p.kind !== 'familiar' && !combos.includes(p.discipline)).map(p => p.discipline))];
   const gList = groups.filter(g => !disc || !groups.some(x => x.discipline === disc) || g.discipline === disc);
   const DAYS: [number, string][] = [[1, 'Lun'], [2, 'Mar'], [3, 'Mié'], [4, 'Jue'], [5, 'Vie'], [6, 'Sáb']];
@@ -237,10 +237,12 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
           <option value="">Elige…</option>{plans.filter(p => p.discipline === disc && p.kind !== 'familiar').map(p =>
             <option key={p.id} value={p.id}>{p.name} · {p.price_cents != null ? `$${(p.price_cents / 100).toLocaleString('es-MX')}` : 'sin precio'}</option>)}</select></label>
         <label className="text-xs">Grupo<select required disabled={!disc} className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
-          <option value="">Elige…</option>{gList.map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
-            return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>
-        <div className="text-xs"><span className="block">Días que viene</span><div className="flex gap-2 py-2">{DAYS.map(([d, l]) =>
-          <label key={d} className="flex items-center gap-1"><input type="checkbox" checked={days.includes(d)} onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{l}</label>)}</div></div>
+          <option value="">Elige…</option>{gList.map(g => <option key={g.id} value={g.id}>{g.activity} {g.start_time}–{g.end_time}{g.capacity ? ` · cupo ${g.capacity} por día` : ''}</option>)}</select></label>
+        <div className="text-xs"><span className="block">Días que viene</span><div className="flex gap-2 py-2">{DAYS.map(([d, l]) => {
+          const full = !!selG && dayFull(loads[selG.id], selG.capacity, d) && !days.includes(d);
+          return <label key={d} className={`flex items-center gap-1 ${full ? 'text-red-400 line-through' : ''}`} title={full ? 'Lleno ese día' : ''}>
+            <input type="checkbox" disabled={full} checked={days.includes(d)} onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{l}
+            {selG?.capacity ? <span className="text-[10px] text-slate-400">{loads[selG.id]?.[d] ?? 0}/{selG.capacity}</span> : null}</label>; })}</div></div>
       </div>
       {f.company_id && !discs.length && <p className="text-xs text-amber-700">Esta sucursal aún no tiene planes: créalos en Cobranza → Planes por disciplina.</p>}
       <div className="flex items-center gap-3"><button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">{busy ? 'Guardando…' : 'Dar de alta'}</button>

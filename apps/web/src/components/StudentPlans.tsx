@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { formatMXN } from '../lib/money';
 import { toCents, thisMonth, type Plan, type DiscRule } from './Billing';
+import { useGroupLoads, dayFull } from '../lib/groupLoad';
 import { monthlyCharge, siblingTargets, prepayQuote, checkCombo, DEFAULT_RULES, type BillingRules } from '@domain/billing';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
@@ -146,7 +147,7 @@ function FamilyBox({ stu, family, siblings, canEdit, onChanged }: { stu: Stu; fa
 function AssignPlan({ s, family, plans, groups, subs, drules, onCancel, onDone }: { s: Stu; family: { id: string } | null; plans: Plan[]; groups: Grp[]; subs: Sub[];
   drules: DiscRule[]; onCancel: () => void; onDone: () => void }) {
   const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [from, setFrom] = useState(thisMonth()); const [classId, setClassId] = useState('');
-  const [days, setDays] = useState<number[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
+  const [days, setDays] = useState<number[]>([]);
   const [ask, setAsk] = useState<Sub | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const combo = drules.find(r => r.discipline === disc && r.is_combo);
   const [parts, setParts] = useState<{ discipline: string; hours: string; classId: string; days: number[] }[]>([
@@ -157,10 +158,14 @@ function AssignPlan({ s, family, plans, groups, subs, drules, onCancel, onDone }
     perDiscipline: Object.fromEntries(drules.filter(r => !r.is_combo).map(r => [r.discipline, { min: Number(r.min_hours), max: Number(r.max_hours) }])) }) : [];
   const comboPlan = combo ? plans.find(x => x.discipline === disc && Number(x.hours_per_week) === total && x.is_active) : undefined;
   const p = combo ? comboPlan : plans.find(x => x.id === planId);
-  useEffect(() => {
-    Promise.all(groups.map(g => supabase.rpc('group_taken', { p_class: g.id, p_month: `${from}-01` })))
-      .then(rs => setTaken(Object.fromEntries(groups.map((g, i) => [g.id, (rs[i].data as number) ?? 0]))));
-  }, [groups, from]);
+  const loads = useGroupLoads(groups.map(g => g.id), from);
+  const taken = Object.fromEntries(groups.map(g => [g.id, Math.max(0, ...(loads[g.id] ?? [0]))]));
+  const capOf = (id: string) => groups.find(g => g.id === id)?.capacity ?? null;
+  const DayBoxes = ({ cls, value, onChange }: { cls: string; value: number[]; onChange: (v: number[]) => void }) => <>{[1, 2, 3, 4, 5, 6, 0].map(d => {
+    const full = !!cls && dayFull(loads[cls], capOf(cls), d) && !value.includes(d);
+    return <label key={d} className={`flex items-center gap-1 ${full ? 'text-red-400 line-through' : ''}`} title={full ? 'Lleno ese día' : ''}>
+      <input type="checkbox" disabled={full} checked={value.includes(d)} onChange={e => onChange(e.target.checked ? [...value, d].sort() : value.filter(x => x !== d))} />{WD[d]}
+      {cls && capOf(cls) ? <span className="text-[10px] text-slate-400">{loads[cls]?.[d] ?? 0}/{capOf(cls)}</span> : null}</label>; })}</>;
   // plan individual que ya tiene en ese mes → preguntar si es cambio
   const clash = subs.find(x => x.student_id === s.id && x.start_month.slice(0, 7) <= from && (!x.end_month || x.end_month.slice(0, 7) >= from));
 
@@ -196,11 +201,10 @@ function AssignPlan({ s, family, plans, groups, subs, drules, onCancel, onDone }
         <label className="text-xs">Desde<input type="month" className={`${field} block`} value={from} onChange={e => setFrom(e.target.value)} /></label>
         {!combo && <label className="text-xs">Grupo<select className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
           <option value="">Sin grupo por ahora</option>{groups.filter(g => !disc || !groups.some(x => x.discipline === disc) || g.discipline === disc).map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
-            return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>}
+            return <option key={g.id} value={g.id} disabled={full && false}>{g.activity} {g.start_time}–{g.end_time}{g.capacity ? ` · cupo ${g.capacity} por día` : ''}{t ? ` · hasta ${t} un día` : ''}</option>; })}</select></label>}
       </div>
       {!combo && <div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-slate-500">Días que viene:</span>
-        {[1, 2, 3, 4, 5, 6, 0].map(d => <label key={d} className="flex items-center gap-1"><input type="checkbox" checked={days.includes(d)}
-          onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{WD[d]}</label>)}</div>}
+        <DayBoxes cls={classId} value={days} onChange={setDays} /></div>}
       {combo && <div className="space-y-2 rounded-lg bg-purple-50 p-2 text-xs">
         {parts.map((x, i) => { const set = (v: Partial<typeof x>) => setParts(parts.map((y, j) => j === i ? { ...y, ...v } : y));
           return <div key={i} className="flex flex-wrap items-end gap-2">
@@ -210,8 +214,7 @@ function AssignPlan({ s, family, plans, groups, subs, drules, onCancel, onDone }
             <label>Grupo<select className={`${field} block`} value={x.classId} onChange={e => set({ classId: e.target.value })}><option value="">Sin grupo</option>
               {groups.filter(g => !x.discipline || !groups.some(z => z.discipline === x.discipline) || g.discipline === x.discipline).map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
                 return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time} · {t}{g.capacity ? `/${g.capacity}` : ''}</option>; })}</select></label>
-            <span className="flex gap-1 pb-2">{[1, 2, 3, 4, 5, 6, 0].map(d => <label key={d} className="flex items-center"><input type="checkbox" checked={x.days.includes(d)}
-              onChange={e => set({ days: e.target.checked ? [...x.days, d].sort() : x.days.filter(z => z !== d) })} />{WD[d]}</label>)}</span>
+            <span className="flex gap-1 pb-2"><DayBoxes cls={x.classId} value={x.days} onChange={v => set({ days: v })} /></span>
             {parts.length > 2 && <button className="pb-2 text-red-600" onClick={() => setParts(parts.filter((_, j) => j !== i))}>Quitar</button>}
           </div>; })}
         <button className="text-brand" onClick={() => setParts([...parts, { discipline: '', hours: '', classId: '', days: [] }])}>+ Otra disciplina</button>
