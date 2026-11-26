@@ -24,7 +24,7 @@ test('hermana con descuento no lleva pronto pago, pero sí recargo', () => {
   const early = monthlyCharge({ price: 150000, month: '2026-12', payDate: '2026-11-20', sibling: true });
   assert.equal(early.sibling, -22500); assert.equal(early.early, 0); assert.equal(early.total, 127500);
   const late = monthlyCharge({ price: 150000, month: '2026-12', payDate: '2026-12-07', sibling: true });
-  assert.equal(late.total, 127500 + 6375);
+  assert.equal(late.total, 127500 + 7500);   // recargo sobre el precio normal
 });
 
 test('becas y descuentos van primero, por porcentaje o cantidad', () => {
@@ -88,4 +88,12 @@ test('doble disciplina: máximo 12 h en total y 8 h por disciplina (configurable
   assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 8 }, { discipline: 'Parkour', hours: 6 }], lim), ['El total es 14 h; el máximo es 12 h']);
   assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 6 }, { discipline: 'Telas', hours: 5 }], lim), ['Telas: máximo 4 h']);
   assert.deepEqual(checkCombo([{ discipline: 'Parkour', hours: 3 }], lim), ['Elige al menos dos disciplinas']);
+});
+
+test('hermanos, pronto pago y recargo van sobre el precio normal', () => {
+  const adj = [{ label: 'Apoyo', mode: 'monto' as const, value: 50000, kind: 'descuento' as const }];
+  const r = monthlyCharge({ price: 201500, month: '2026-12', payDate: '2026-12-12', sibling: false, adjustments: adj });
+  assert.deepEqual([r.adjustments[0].amount, r.surcharge, r.total], [-50000, 20150, 171650]);
+  const e = monthlyCharge({ price: 201500, month: '2026-12', payDate: '2026-11-30', sibling: false, adjustments: adj });
+  assert.deepEqual([e.early, e.total], [-10075, 141425]);
 });

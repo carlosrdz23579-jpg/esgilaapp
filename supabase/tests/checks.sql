@@ -715,7 +715,7 @@ declare dir uuid := (select id from public.app_users where email = 'aldost228@gm
 begin
   perform set_config('request.jwt.claim.sub', dir::text, true);
   set local role authenticated;
-  insert into public.plans (company_id, discipline, name, hours_per_week) values (vin, 'Baby Gym', '2 horas por semana', 2) returning id into pl;
+  insert into public.plans (company_id, discipline, name, hours_per_week, use_table) values (vin, 'Baby Gym', '2 horas por semana', 2, false) returning id into pl;
   insert into public.plan_prices (plan_id, effective_month, price_cents) values (pl, '2026-01-01', 190000), (pl, '2026-11-01', 201500);
   if app.plan_price(pl, '2026-10-15') <> 190000 or app.plan_price(pl, '2026-12-01') <> 201500 then raise exception 'precio por mes'; end if;
   insert into public.plans (company_id, discipline, name, kind, max_members) values (vin, 'Baby Gym', 'Familiar 2 hermanas', 'familiar', 2) returning id into fpl;
@@ -804,4 +804,25 @@ begin
   if not ok then raise exception 'rebasó 12 horas'; end if;
   reset role;
   raise notice 'OK: doble disciplina';
+end $$;
+
+-- 0039: tabla de precios por horas
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid; eq uuid;
+begin
+  if app.hour_price(vin, 3, '2026-12-01') <> 201500 then raise exception 'no precargó la tabla'; end if;
+  if app.hour_price(vin, 3, '2026-07-01') is not null then raise exception 'precio antes de la vigencia'; end if;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.plans (company_id, discipline, name, hours_per_week) values (vin, 'Parkour', '3 horas por semana', 3) returning id into pl;
+  if app.plan_price(pl, '2026-12-01') <> 201500 then raise exception 'plan no toma la tabla'; end if;
+  insert into public.hour_prices (company_id, hours, effective_month, price_cents) values (vin, 3, '2027-01-01', 210000);
+  if app.plan_price(pl, '2026-12-01') <> 201500 or app.plan_price(pl, '2027-02-01') <> 210000 then raise exception 'historial de la tabla'; end if;
+  insert into public.plans (company_id, discipline, name, use_table) values (vin, 'Equipo', 'Equipo', false) returning id into eq;
+  insert into public.plan_prices (plan_id, effective_month, price_cents) values (eq, '2026-08-01', 358000);
+  if app.plan_price(eq, '2026-12-01') <> 358000 then raise exception 'precio propio'; end if;
+  reset role;
+  raise notice 'OK: tabla de precios por horas';
 end $$;

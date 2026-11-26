@@ -8,7 +8,7 @@
 //  · Becas y descuentos recurrentes (porcentaje o cantidad) se aplican primero, sobre el precio del plan.
 //  · Quien tiene BECA no lleva ningún otro descuento (ni descuentos recurrentes, ni hermanos, ni pronto pago).
 //    Si paga ya con recargo (día 6 en adelante) PIERDE la beca ese mes: se cobra el plan completo + el recargo.
-//  · Los recargos se calculan sobre lo que queda después de becas y hermanos.
+//  · Hermanos, pronto pago y recargos se calculan SOBRE EL PRECIO NORMAL del plan (como dice la tabla de precios).
 //  · Familia: se suman los planes de las hermanas; el 15 % va al plan más barato y el pronto pago sólo al más caro.
 //  · Pago por adelantado: N meses con un descuento especial y el precio congelado durante esos meses.
 
@@ -55,9 +55,9 @@ export function monthlyCharge(o: { price: number; month: string; payDate: string
     const off = Math.min(amount, a.mode === 'pct' ? pct(amount, a.value) : a.value);
     amount -= off; return { label: a.label, amount: -off };
   });
-  const sibling = o.sibling && !hasBeca ? -pct(amount, rules.siblingBps) : 0; amount += sibling;
-  const early = st.stage === 'pronto' && !o.sibling && !hasBeca ? -pct(amount, rules.earlyBps) : 0; amount += early;
-  const surcharge = st.stage === 'recargo' ? pct(amount, st.bps) : 0; amount += surcharge;
+  const sibling = o.sibling && !hasBeca ? -Math.min(amount, pct(o.price, rules.siblingBps)) : 0; amount += sibling;
+  const early = st.stage === 'pronto' && !o.sibling && !hasBeca ? -Math.min(amount, pct(o.price, rules.earlyBps)) : 0; amount += early;
+  const surcharge = st.stage === 'recargo' ? pct(o.price, st.bps) : 0; amount += surcharge;
   return { base: o.price, adjustments, sibling, early, surcharge, surchargeBps: st.stage === 'recargo' ? st.bps : 0, total: amount, becaLost };
 }
 

@@ -208,7 +208,8 @@ end $$;
 drop trigger if exists trg_guard_sub on public.subscriptions;
 create trigger trg_guard_sub before insert or update or delete on public.subscriptions for each row execute function app.guard_subscription();
 
-create or replace view public.plans_v with (security_invoker = true) as
+drop view if exists public.plans_v;
+create view public.plans_v with (security_invoker = true) as
   select p.*, app.plan_price(p.id, app.today_mx()) as price_cents,
     (select count(*) from public.subscriptions s where s.plan_id = p.id and s.cancelled_at is null
        and s.start_month <= date_trunc('month', app.today_mx()) and (s.end_month is null or s.end_month >= date_trunc('month', app.today_mx()))) as active_subs
