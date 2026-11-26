@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
 import { Modal } from './ui';
 import { parseEvoSheet, type EvoReport } from '@domain/evo';
+import StudentPlans from './StudentPlans';
 
 interface Cls { id: string; company_id: string; activity: string; start_time: string; end_time: string; duration_override_min: number | null;
   detected_min: number; duration_min: number; is_active: boolean }
@@ -357,6 +358,8 @@ function StudentCard({ s, classes, enr, canNotes, canCfg, onClose, onChanged }:
       </div>
       <div className="text-sm">{mine.length ? mine.map(e => <span key={e.class_id} className="mr-2 rounded-full bg-slate-100 px-2 py-1">{e.c.activity} {e.c.start_time} · {e.weekdays.map(w => WD[w]).join(', ')}</span>)
         : <span className="text-slate-400">Sin clases ese mes</span>}</div>
+
+      <StudentPlans s={s} onChanged={onChanged} />
 
       <div className="space-y-2 border-t pt-3">
         <div className="flex flex-wrap items-center gap-3"><h4 className="text-sm font-semibold">Asistencia</h4>

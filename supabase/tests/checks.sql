@@ -705,3 +705,49 @@ begin
   reset role;
   raise notice 'OK: seguimiento de empleados';
 end $$;
+
+-- 0036: catálogo de planes, grupos con cupo, familias y planes asignados
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid; fpl uuid; cl uuid; fam uuid; s1 uuid; s2 uuid; s3 uuid; sub uuid; fsub uuid; adj uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.plans (company_id, discipline, name, hours_per_week) values (vin, 'Baby Gym', '2 horas por semana', 2) returning id into pl;
+  insert into public.plan_prices (plan_id, effective_month, price_cents) values (pl, '2026-01-01', 190000), (pl, '2026-11-01', 201500);
+  if app.plan_price(pl, '2026-10-15') <> 190000 or app.plan_price(pl, '2026-12-01') <> 201500 then raise exception 'precio por mes'; end if;
+  insert into public.plans (company_id, discipline, name, kind, max_members) values (vin, 'Baby Gym', 'Familiar 2 hermanas', 'familiar', 2) returning id into fpl;
+  insert into public.class_groups (company_id, activity, start_time, end_time, capacity) values (vin, 'Baby Gym 2', '17:00', '18:00', 1) returning id into cl;
+  insert into public.families (name) values ('Familia Ruiz') returning id into fam;
+  insert into public.students (company_id, full_name, family_id) values (vin, 'Hermana A', fam) returning id into s1;
+  insert into public.students (company_id, full_name, family_id) values (vin, 'Hermana B', fam) returning id into s2;
+  insert into public.students (company_id, full_name) values (vin, 'Otra') returning id into s3;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, s1, '2026-12-01') returning id into sub;
+  insert into public.subscription_members (subscription_id, student_id, class_id, weekdays) values (sub, s1, cl, '{1,3}');
+  -- cupo lleno
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, s3, '2026-12-01') returning id into s3;
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, class_id) values (s3, (select student_id from public.subscriptions where id = s3), cl); exception when others then ok := true; end;
+  if not ok then raise exception 'rebasó el cupo del grupo'; end if;
+  -- familiar
+  insert into public.subscriptions (company_id, plan_id, family_id, start_month) values (vin, fpl, fam, '2026-12-01') returning id into fsub;
+  insert into public.subscription_members (subscription_id, student_id) values (fsub, s1), (fsub, s2);
+  ok := false; begin insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, fpl, s1, '2026-12-01'); exception when others then ok := true; end;
+  if not ok then raise exception 'plan familiar asignado a una alumna'; end if;
+  -- beca indefinida con pausa de un mes
+  insert into public.subscription_adjustments (subscription_id, kind, label, mode, value, from_month) values (sub, 'beca', 'Beca 50 %', 'pct', 5000, '2026-12-01') returning id into adj;
+  insert into public.adjustment_skips (adjustment_id, month) values (adj, '2027-01-01');
+  ok := false; begin update public.subscription_adjustments set value = 1 where id = adj; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó una beca'; end if;
+  update public.subscription_adjustments set to_month = '2027-03-01' where id = adj;
+  update public.subscriptions set end_month = '2027-02-01' where id = sub;
+  ok := false; begin update public.subscriptions set plan_id = fpl where id = sub; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó un plan asignado'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  if exists (select 1 from public.subscriptions where id = sub) then raise exception 'sin permiso ve planes'; end if;
+  reset role;
+  raise notice 'OK: catálogo de planes, cupo, familias y becas';
+end $$;

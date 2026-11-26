@@ -17,7 +17,8 @@ create table if not exists public.class_groups (
   unique (company_id, activity, start_time)
 );
 -- Duración detectada (fin − inicio) salvo que se haya puesto una excepción manual.
-create or replace view public.class_groups_v with (security_invoker = true) as
+drop view if exists public.class_groups_v;
+create view public.class_groups_v with (security_invoker = true) as
   select c.*,
     ((split_part(end_time, ':', 1)::int * 60 + split_part(end_time, ':', 2)::int)
      - (split_part(start_time, ':', 1)::int * 60 + split_part(start_time, ':', 2)::int)) as detected_min,
