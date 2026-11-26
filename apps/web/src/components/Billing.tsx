@@ -89,11 +89,11 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
           <div key={d} className="overflow-x-auto rounded-xl bg-white shadow-sm">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">{d}</th><th className="px-3 py-2">Horas/sem</th>
-                <th className="px-3 py-2">Tipo</th><th className="px-3 py-2 text-right">Precio vigente</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
+                <th className="px-3 py-2">Cobro</th><th className="px-3 py-2 text-right">Precio vigente</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
               <tbody>{list.map(p => (
                 <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
                   <td className="px-3 py-2 font-medium">{p.name}</td><td className="px-3 py-2">{p.hours_per_week ?? '—'}</td>
-                  <td className="px-3 py-2">{p.kind === 'familiar' ? `Familiar (hasta ${p.max_members})` : 'Individual'}</td>
+                  <td className="px-3 py-2">{p.kind === 'familiar' ? `Familiar (hasta ${p.max_members})` : 'Mensual'}</td>
                   <td className="px-3 py-2 text-right">{p.price_cents !== null ? formatMXN(p.price_cents) : '—'}</td>
                   <td className="px-3 py-2 text-right">{p.active_subs}</td>
                   <td className="space-x-3 whitespace-nowrap px-3 py-2 text-right text-xs">
@@ -124,9 +124,6 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
           <datalist id="disc">{disciplines.map(d => <option key={d} value={d} />)}</datalist></label>
         <label className="text-xs">Nombre del plan<input required className={`${field} block w-48`} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="2 horas por semana" /></label>
         <label className="text-xs">Horas/sem<input type="number" step="0.5" className={`${field} block w-20`} value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></label>
-        <label className="text-xs">Tipo<select className={`${field} block`} value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}>
-          <option value="individual">Individual</option><option value="familiar">Familiar</option></select></label>
-        {form.kind === 'familiar' && <label className="text-xs">Hasta<input type="number" min={2} max={10} className={`${field} block w-16`} value={form.max} onChange={e => setForm({ ...form, max: e.target.value })} /></label>}
         <label className="text-xs">Precio mensual<input required className={`${field} block w-28`} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label>
         <label className="text-xs">Desde<input type="month" className={`${field} block`} value={form.from} onChange={e => setForm({ ...form, from: e.target.value })} /></label>
         <button className={btn}>Agregar plan</button>
@@ -235,7 +232,7 @@ function Products({ co, canCfg }: { co: string; canCfg: boolean }) {
 }
 
 // ---------------------------------------------------------------- Reglas, anualidad, formas de pago
-interface Rules { early_bps: number; sibling_bps: number; due_day: number; surcharge1_day: number; surcharge1_bps: number; surcharge2_day: number; surcharge2_bps: number }
+interface Rules { early_bps: number; sibling_bps: number; prepay_bps: number; due_day: number; surcharge1_day: number; surcharge1_bps: number; surcharge2_day: number; surcharge2_bps: number }
 function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [r, setR] = useState<Rules | null>(null); const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
   const [fees, setFees] = useState<{ id: string; year: number; amount_cents: number }[]>([]); const [fee, setFee] = useState({ year: String(new Date().getFullYear() + 1), amount: '' });
@@ -245,7 +242,7 @@ function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
       supabase.from('billing_rules').select('*').eq('company_id', co).maybeSingle(),
       supabase.from('annual_fees').select('id,year,amount_cents').eq('company_id', co).order('year', { ascending: false }),
       supabase.from('payment_methods').select('id,name,kind,is_active').order('sort').order('name')]);
-    setR((a.data as Rules) ?? { early_bps: 500, sibling_bps: 1500, due_day: 5, surcharge1_day: 6, surcharge1_bps: 500, surcharge2_day: 11, surcharge2_bps: 1000 });
+    setR((a.data as Rules) ?? { early_bps: 500, sibling_bps: 1500, prepay_bps: 1500, due_day: 5, surcharge1_day: 6, surcharge1_bps: 500, surcharge2_day: 11, surcharge2_bps: 1000 });
     setFees(b.data ?? []); setMethods(c.data ?? []);
   }, [co]);
   useEffect(() => { load(); }, [load]);
@@ -276,8 +273,9 @@ function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
         <p>Pronto pago (pagado antes del día 1 del mes): {pctIn('early_bps')} % de descuento</p>
         <p>Del día 1 al día {dayIn('due_day')}: precio normal</p>
         <p>Desde el día {dayIn('surcharge1_day')}: {pctIn('surcharge1_bps')} % de recargo · desde el día {dayIn('surcharge2_day')}: {pctIn('surcharge2_bps')} % de recargo</p>
-        <p>Hermanos: {pctIn('sibling_bps')} % a las hermanas con plan de menor valor (todas menos la del plan más caro; cuenta entre sucursales). A ellas no se les aplica pronto pago.</p>
-        <p className="text-xs text-slate-500">Las becas y descuentos de cada alumna se aplican primero; los recargos se calculan sobre lo que queda.</p>
+        <p>Hermanos (plan familiar): se suman los planes de las hermanas; {pctIn('sibling_bps')} % al plan más barato (con 3 o más, a todas menos la del plan más caro) y el pronto pago sólo al más caro. Cuenta entre sucursales.</p>
+        <p>Pago por adelantado: {pctIn('prepay_bps')} % de descuento sugerido (se puede ajustar en cada pago) y el precio queda congelado esos meses.</p>
+        <p className="text-xs text-slate-500">Quien tiene beca no lleva ningún otro descuento (ni hermanos, ni pronto pago, ni adelanto); los recargos sí aplican, sobre lo que queda después de la beca.</p>
         {canCfg && <button className={btn} onClick={saveRules}>Guardar reglas</button>}
       </section>
       <section className="space-y-2 rounded-xl bg-white p-4 text-sm shadow-sm">

@@ -6,7 +6,10 @@
 //  · Hermanos: en una familia con 2+ planes individuales, todas menos la del plan de mayor valor
 //    llevan 15 % y a ellas NO se les aplica pronto pago. Cuenta aunque estén en distintas sucursales.
 //  · Becas y descuentos recurrentes (porcentaje o cantidad) se aplican primero, sobre el precio del plan.
+//  · Quien tiene BECA no lleva ningún otro descuento (ni descuentos recurrentes, ni hermanos, ni pronto pago).
 //  · Los recargos se calculan sobre lo que queda después de becas y hermanos.
+//  · Familia: se suman los planes de las hermanas; el 15 % va al plan más barato y el pronto pago sólo al más caro.
+//  · Pago por adelantado: N meses con un descuento especial y el precio congelado durante esos meses.
 
 export interface BillingRules {
   earlyBps: number;          // pronto pago (500)
@@ -16,7 +19,7 @@ export interface BillingRules {
 }
 export const DEFAULT_RULES: BillingRules = { earlyBps: 500, siblingBps: 1500, dueDay: 5, surcharges: [{ fromDay: 6, bps: 500 }, { fromDay: 11, bps: 1000 }] };
 
-export interface Adjustment { label: string; mode: 'pct' | 'monto'; value: number }   // pct en bps, monto en centavos
+export interface Adjustment { label: string; mode: 'pct' | 'monto'; value: number; kind?: 'beca' | 'descuento' }   // pct en bps, monto en centavos
 
 export interface ChargeBreakdown {
   base: number; adjustments: { label: string; amount: number }[]; sibling: number;
@@ -42,21 +45,24 @@ export function monthlyCharge(o: { price: number; month: string; payDate: string
   adjustments?: Adjustment[]; rules?: BillingRules }): ChargeBreakdown {
   const rules = o.rules ?? DEFAULT_RULES;
   let amount = o.price;
-  const adjustments = (o.adjustments ?? []).map(a => {
+  const all = o.adjustments ?? [];
+  const hasBeca = all.some(a => a.kind === 'beca');
+  const adjustments = (hasBeca ? all.filter(a => a.kind === 'beca') : all).map(a => {
     const off = Math.min(amount, a.mode === 'pct' ? pct(amount, a.value) : a.value);
     amount -= off; return { label: a.label, amount: -off };
   });
-  const sibling = o.sibling ? -pct(amount, rules.siblingBps) : 0; amount += sibling;
+  const sibling = o.sibling && !hasBeca ? -pct(amount, rules.siblingBps) : 0; amount += sibling;
   const st = payStage(o.month, o.payDate, rules);
-  const early = st.stage === 'pronto' && !o.sibling ? -pct(amount, rules.earlyBps) : 0; amount += early;
+  const early = st.stage === 'pronto' && !o.sibling && !hasBeca ? -pct(amount, rules.earlyBps) : 0; amount += early;
   const surcharge = st.stage === 'recargo' ? pct(amount, st.bps) : 0; amount += surcharge;
   return { base: o.price, adjustments, sibling, early, surcharge, surchargeBps: st.stage === 'recargo' ? st.bps : 0, total: amount };
 }
 
-/** Qué suscripciones llevan descuento de hermanos: en cada familia, todas menos la de mayor precio. */
-export function siblingTargets(subs: { id: string; familyId: string | null; price: number; familyPlan?: boolean }[]) {
+/** Qué suscripciones llevan descuento de hermanos: en cada familia, todas menos la de mayor precio.
+ *  Las que tienen beca no cuentan (no llevan otro descuento). */
+export function siblingTargets(subs: { id: string; familyId: string | null; price: number; familyPlan?: boolean; beca?: boolean }[]) {
   const byFam = new Map<string, typeof subs>();
-  for (const s of subs) if (s.familyId && !s.familyPlan) byFam.set(s.familyId, [...(byFam.get(s.familyId) ?? []), s]);
+  for (const s of subs) if (s.familyId && !s.familyPlan && !s.beca) byFam.set(s.familyId, [...(byFam.get(s.familyId) ?? []), s]);
   const out = new Set<string>();
   for (const list of byFam.values()) {
     if (list.length < 2) continue;
@@ -68,3 +74,11 @@ export function siblingTargets(subs: { id: string; familyId: string | null; pric
 
 /** Cambio de plan en el mismo mes: se cobra la diferencia (negativa = queda a favor). */
 export const planChangeDifference = (oldTotal: number, newTotal: number) => newTotal - oldTotal;
+
+/** Pago por adelantado: total a pagar y cuánto le toca a cada mes (para el reporte de planes). */
+export function prepayQuote(price: number, months: number, discountBps: number) {
+  const gross = price * months;
+  const total = gross - pct(gross, discountBps);
+  const per = Math.floor(total / months), extra = total - per * months;
+  return { gross, discount: gross - total, total, perMonth: Array.from({ length: months }, (_, i) => per + (i < extra ? 1 : 0)) };
+}

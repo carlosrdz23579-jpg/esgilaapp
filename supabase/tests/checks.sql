@@ -751,3 +751,32 @@ begin
   reset role;
   raise notice 'OK: catálogo de planes, cupo, familias y becas';
 end $$;
+
+-- 0037: pago por adelantado
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid := (select id from public.plans where company_id = vin and name = '2 horas por semana');
+        st uuid; sub uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.students (company_id, full_name) values (vin, 'Adelantada') returning id into st;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, st, '2027-01-01') returning id into sub;
+  insert into public.plan_prepayments (company_id, subscription_id, from_month, months, price_cents, discount_bps, total_cents)
+    values (vin, sub, '2027-01-01', 6, 201500, 1500, 1027650);
+  if (select count(*) from public.plan_prepaid_months where subscription_id = sub) <> 6 then raise exception 'no cubrió 6 meses'; end if;
+  if (select sum(amount_cents) from public.plan_prepaid_months where subscription_id = sub) <> 1027650 then raise exception 'el reparto no suma el total'; end if;
+  ok := false; begin insert into public.plan_prepayments (company_id, subscription_id, from_month, months, price_cents, discount_bps, total_cents)
+    values (vin, sub, '2027-06-01', 2, 201500, 0, 403000); exception when others then ok := true; end;
+  if not ok then raise exception 'se pagó dos veces el mismo mes'; end if;
+  ok := false; begin insert into public.plan_prepayments (company_id, subscription_id, from_month, months, price_cents, discount_bps, total_cents)
+    values (vin, sub, '2027-07-01', 2, 201500, 1000, 1); exception when others then ok := true; end;
+  if not ok then raise exception 'aceptó un total que no cuadra'; end if;
+  insert into public.subscription_adjustments (subscription_id, kind, label, mode, value, from_month) values (sub, 'beca', 'Beca', 'pct', 2000, '2027-07-01');
+  ok := false; begin insert into public.plan_prepayments (company_id, subscription_id, from_month, months, price_cents, discount_bps, total_cents)
+    values (vin, sub, '2027-07-01', 2, 201500, 1000, 362700); exception when others then ok := true; end;
+  if not ok then raise exception 'becada con descuento de adelanto'; end if;
+  reset role;
+  raise notice 'OK: pago por adelantado';
+end $$;

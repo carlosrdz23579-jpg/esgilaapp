@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { monthlyCharge, payStage, siblingTargets, planChangeDifference } from './billing.ts';
+import { monthlyCharge, payStage, siblingTargets, planChangeDifference, prepayQuote } from './billing.ts';
 
 test('etapas de pago por fecha', () => {
   assert.equal(payStage('2026-12', '2026-11-28').stage, 'pronto');
@@ -45,4 +45,28 @@ test('hermanos: todas menos la del plan más caro, entre sucursales; los planes 
 test('cambio de plan cobra la diferencia', () => {
   assert.equal(planChangeDifference(201500, 245000), 43500);
   assert.equal(planChangeDifference(245000, 201500), -43500);
+});
+
+test('con beca no hay otro descuento (sí recargo)', () => {
+  const adj = [{ label: 'Beca 30 %', mode: 'pct' as const, value: 3000, kind: 'beca' as const }, { label: 'Descuento', mode: 'monto' as const, value: 10000, kind: 'descuento' as const }];
+  const early = monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-11-20', sibling: true, adjustments: adj });
+  assert.deepEqual([early.adjustments.length, early.sibling, early.early, early.total], [1, 0, 0, 140000]);
+  assert.equal(monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-12', sibling: false, adjustments: adj }).total, 154000);
+  // la becada no cuenta para hermanos: su hermana queda sola y no lleva 15 %
+  assert.deepEqual([...siblingTargets([{ id: 'a', familyId: 'F', price: 200000 }, { id: 'b', familyId: 'F', price: 150000, beca: true }])], []);
+});
+
+test('familia: 15 % al plan más barato, pronto pago al más caro', () => {
+  const t = siblingTargets([{ id: 'cara', familyId: 'F', price: 201500 }, { id: 'barata', familyId: 'F', price: 169500 }]);
+  const cara = monthlyCharge({ price: 201500, month: '2026-12', payDate: '2026-11-28', sibling: t.has('cara') });
+  const barata = monthlyCharge({ price: 169500, month: '2026-12', payDate: '2026-11-28', sibling: t.has('barata') });
+  assert.deepEqual([cara.early, cara.sibling, barata.early, barata.sibling], [-10075, 0, 0, -25425]);
+  assert.equal(cara.total + barata.total, 191425 + 144075);
+});
+
+test('pago por adelantado: descuento, total y reparto por mes', () => {
+  const q = prepayQuote(201500, 6, 1500);
+  assert.deepEqual([q.gross, q.discount, q.total], [1209000, 181350, 1027650]);
+  assert.equal(q.perMonth.reduce((a, b) => a + b, 0), q.total); assert.equal(q.perMonth[0], 171275);
+  const odd = prepayQuote(100001, 3, 0); assert.deepEqual(odd.perMonth, [100001, 100001, 100001]);
 });
