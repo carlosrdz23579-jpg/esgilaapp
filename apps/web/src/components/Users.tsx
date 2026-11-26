@@ -22,6 +22,7 @@ export const PERM_MODULES: { key: string; label: string; actions: string[]; econ
   { key: 'indicators', label: 'Indicadores (Configurar = crear y editar el catálogo)', actions: ['view', 'configure'], group: 'Seguimiento' },
   { key: 'planning', label: 'Planeaciones (Ver = revisar; Configurar = subir la general)', actions: ['view', 'edit', 'configure'], group: 'Seguimiento' },
   { key: 'uniform', label: 'Asistencia y uniforme de maestros', actions: ['view', 'edit'], group: 'Seguimiento' },
+  { key: 'cashbox', label: 'Caja (Ver = cortes y ventas; Editar = abrir caja y cobrar; Configurar = cancelar ventas de otros)', actions: ['view', 'edit', 'configure'], group: 'Finanzas' },
   { key: 'billing', label: 'Cobranza (Ver; Editar = asignar planes, familias y becas; Configurar = planes, precios, productos, reglas)', actions: ['view', 'edit', 'configure'], group: 'Finanzas' },
   { key: 'students', label: 'Alumnas (Ver; Editar = pasar lista; Crear = notas internas; Configurar = importar de EVO y clases)', actions: ['view', 'edit', 'create', 'configure'], group: 'Alumnas' },
   { key: 'reports_shared', label: 'Reportes compartidos', actions: ['view', 'share'], group: 'Comunicación' },

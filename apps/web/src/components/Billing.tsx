@@ -369,7 +369,7 @@ function Products({ co, canCfg }: { co: string; canCfg: boolean }) {
 }
 
 // ---------------------------------------------------------------- Reglas, anualidad, formas de pago
-interface Rules { early_bps: number; sibling_bps: number; prepay_bps: number; due_day: number; surcharge1_day: number; surcharge1_bps: number; surcharge2_day: number; surcharge2_bps: number }
+interface Rules { charge_from?: string; early_bps: number; sibling_bps: number; prepay_bps: number; due_day: number; surcharge1_day: number; surcharge1_bps: number; surcharge2_day: number; surcharge2_bps: number }
 function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [r, setR] = useState<Rules | null>(null); const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
   const [fees, setFees] = useState<{ id: string; year: number; amount_cents: number }[]>([]); const [fee, setFee] = useState({ year: String(new Date().getFullYear() + 1), amount: '' });
@@ -400,13 +400,15 @@ function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
   }
   async function toggleMethod(id: string, is_active: boolean) { const { error } = await supabase.from('payment_methods').update({ is_active }).eq('id', id); if (error) setMsg({ ok: false, t: error.message }); else load(); }
   if (!r) return null;
-  const pctIn = (k: keyof Rules) => <input type="number" step="0.5" min={0} max={100} disabled={!canCfg} className="w-16 rounded border px-2 py-1"
+  const pctIn = (k: Exclude<keyof Rules, "charge_from">) => <input type="number" step="0.5" min={0} max={100} disabled={!canCfg} className="w-16 rounded border px-2 py-1"
     value={r[k] / 100} onChange={e => setR({ ...r, [k]: Math.round(+e.target.value * 100) })} />;
-  const dayIn = (k: keyof Rules) => <input type="number" min={1} max={31} disabled={!canCfg} className="w-16 rounded border px-2 py-1" value={r[k]} onChange={e => setR({ ...r, [k]: +e.target.value })} />;
+  const dayIn = (k: Exclude<keyof Rules, "charge_from">) => <input type="number" min={1} max={31} disabled={!canCfg} className="w-16 rounded border px-2 py-1" value={r[k]} onChange={e => setR({ ...r, [k]: +e.target.value })} />;
   return (
     <div className="space-y-4">
       <section className="space-y-2 rounded-xl bg-white p-4 text-sm shadow-sm">
         <h3 className="font-semibold">Reglas de cobro de mensualidades</h3>
+        <p>Se cobran mensualidades en este sistema desde <input type="month" disabled={!canCfg} className="rounded border px-2 py-1" value={(r.charge_from ?? '').slice(0, 7)}
+          onChange={e => setR({ ...r, charge_from: `${e.target.value}-01` })} /> <span className="text-xs text-slate-500">(los meses anteriores se cobraron en EVO y no aparecen como adeudo)</span></p>
         <p>Pronto pago (pagado antes del día 1 del mes): {pctIn('early_bps')} % de descuento</p>
         <p>Del día 1 al día {dayIn('due_day')}: precio normal</p>
         <p>Desde el día {dayIn('surcharge1_day')}: {pctIn('surcharge1_bps')} % de recargo · desde el día {dayIn('surcharge2_day')}: {pctIn('surcharge2_bps')} % de recargo</p>

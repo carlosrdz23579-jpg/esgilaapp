@@ -887,3 +887,46 @@ begin
   reset role;
   raise notice 'OK: prospectos y clase muestra';
 end $$;
+
+-- 0043: caja y cobros
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid := (select id from public.plans where company_id = vin and name = '2 horas por semana' limit 1);
+        ef uuid := (select id from public.payment_methods where name = 'Efectivo');
+        sf uuid := (select id from public.payment_methods where name = 'Saldo a favor');
+        st uuid; sub uuid; sale uuid; sess uuid; ok boolean; m date := date_trunc('month', app.today_mx())::date;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.students (company_id, full_name) values (vin, 'Pagadora') returning id into st;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, st, m) returning id into sub;
+  ok := false; begin perform public.register_sale(vin, st, null, jsonb_build_array(jsonb_build_object('kind','otro','description','x','amount_cents',100)), jsonb_build_array(jsonb_build_object('payment_method_id',ef,'amount_cents',100))); exception when others then ok := true; end;
+  if not ok then raise exception 'cobró sin caja abierta'; end if;
+  sess := public.open_cash(vin, 50000);
+  -- mensualidad + 100 de saldo a favor, pagado en efectivo
+  sale := public.register_sale(vin, st, null, jsonb_build_array(
+      jsonb_build_object('kind','mensualidad','student_id',st,'subscription_id',sub,'month',m,'description','Mensualidad','base_cents',158500,'amount_cents',158500),
+      jsonb_build_object('kind','saldo_favor','student_id',st,'description','Saldo a favor','amount_cents',10000)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',ef,'amount_cents',168500)));
+  if public.student_credit(st) <> 10000 then raise exception 'saldo a favor'; end if;
+  ok := false; begin perform public.register_sale(vin, st, null, jsonb_build_array(jsonb_build_object('kind','mensualidad','subscription_id',sub,'month',m,'description','x','base_cents',1,'amount_cents',1)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',ef,'amount_cents',1))); exception when others then ok := true; end;
+  if not ok then raise exception 'cobró dos veces el mismo mes'; end if;
+  ok := false; begin perform public.register_sale(vin, st, null, jsonb_build_array(jsonb_build_object('kind','otro','description','x','amount_cents',20000)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',sf,'amount_cents',20000))); exception when others then ok := true; end;
+  if not ok then raise exception 'usó más saldo a favor del que tiene'; end if;
+  perform public.register_sale(vin, st, null, jsonb_build_array(jsonb_build_object('kind','otro','description','Moño','amount_cents',8000)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',sf,'amount_cents',8000)));
+  if public.student_credit(st) <> 2000 then raise exception 'no descontó el saldo usado'; end if;
+  ok := false; begin perform public.cancel_sale(sale, 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'canceló sin motivo'; end if;
+  ok := false; begin perform public.cancel_sale(sale, 'Error de captura'); exception when others then ok := true; end;
+  if not ok then raise exception 'canceló una venta cuyo saldo ya se usó'; end if;
+  begin update public.sale_lines set amount_cents = 1 where sale_id = sale; exception when others then null; end;
+  if exists (select 1 from public.sale_lines where sale_id = sale and amount_cents = 1) then raise exception 'se editó una venta'; end if;
+  perform public.close_cash(sess, 50000, null);
+  if (select count(*) from public.sales where company_id = vin) < 2 or (select max(folio) from public.sales where company_id = vin) < 2 then raise exception 'folios'; end if;
+  reset role;
+  raise notice 'OK: caja y cobros';
+end $$;
