@@ -651,3 +651,23 @@ begin
   reset role;
   raise notice 'OK: alumnas, EVO, pase de lista y notas';
 end $$;
+
+-- 0032: entregas de pago
+do $$
+declare admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        run uuid := (select id from public.payroll_runs where status = 'autorizada' limit 1);
+        co uuid; e uuid; ok boolean;
+begin
+  select company_id into co from public.payroll_runs where id = run;
+  select id into e from public.employees where company_id = co limit 1;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  insert into public.pay_deliveries (run_id, company_id, employee_id, method, delivered) values (run, co, e, 'efectivo', true);
+  insert into public.pay_deliveries (run_id, company_id, employee_id, method, delivered) values (run, co, e, 'efectivo', false);
+  if (select delivered from public.pay_deliveries_latest where run_id = run and employee_id = e) then raise exception 'desmarcar no quedó'; end if;
+  ok := false; begin delete from public.pay_deliveries where run_id = run; exception when others then ok := true; end;
+  if not ok and exists (select 1 from public.pay_deliveries where run_id = run) is false then raise exception 'se borró una entrega'; end if;
+  reset role;
+  if (select count(*) from public.pay_deliveries where run_id = run) <> 2 then raise exception 'historial de entregas incompleto'; end if;
+  raise notice 'OK: entregas de pago';
+end $$;
