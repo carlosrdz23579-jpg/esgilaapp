@@ -10,7 +10,7 @@ interface Cls { id: string; company_id: string; activity: string; start_time: st
   detected_min: number; duration_min: number; is_active: boolean }
 interface Stu { id: string; company_id: string; evo_id: string | null; full_name: string; phone: string | null; birth_date: string | null;
   enrolled_on: string | null; is_active: boolean }
-interface Enr { student_id: string; class_id: string; month: string; weekdays: number[] }
+interface Enr { student_id: string; class_id: string; month: string; weekdays: number[]; plan?: { start: string; end: string | null } }
 interface Att { student_id: string; class_id: string; date: string; arrival: string | null; extra: boolean; annulled: boolean; created_at: string }
 interface Note { id: string; student_id: string; body: string; author_name: string | null; created_by: string; created_at: string; deleted_at: string | null }
 
@@ -30,9 +30,16 @@ const age = (b: string | null) => {
 
 /** Inscripción vigente de cada clase en una fecha: el mes importado más reciente que no sea posterior. */
 function rosterFor(enr: Enr[], classId: string, date: string) {
-  const mine = enr.filter(e => e.class_id === classId && e.month <= monthOf(date));
+  const mo = monthOf(date);
+  const mine = enr.filter(e => !e.plan && e.class_id === classId && e.month <= mo);
   const m = mine.reduce((a, e) => (e.month > a ? e.month : a), '');
-  return mine.filter(e => e.month === m);
+  const out = new Map(mine.filter(e => e.month === m).map(e => [e.student_id, { ...e }]));
+  // + quienes tienen un plan asignado en Cobranza con este grupo (alumnas dadas de alta aquí, no en EVO)
+  for (const e of enr) if (e.plan && e.class_id === classId && e.plan.start <= mo && (!e.plan.end || e.plan.end >= mo)) {
+    const cur = out.get(e.student_id);
+    out.set(e.student_id, cur ? { ...cur, weekdays: [...new Set([...cur.weekdays, ...e.weekdays])].sort() } : { ...e, month: mo });
+  }
+  return [...out.values()];
 }
 
 export default function Students() {
@@ -51,9 +58,15 @@ export default function Students() {
     let s = supabase.from('students').select('*').order('full_name').limit(2000);
     let e = supabase.from('student_enrollments').select('student_id,class_id,month,weekdays').limit(10000);
     if (companyId !== 'all') { c = c.eq('company_id', companyId); s = s.eq('company_id', companyId); e = e.eq('company_id', companyId); }
-    const [rc, rs, re] = await Promise.all([c, s, e]);
+    let pm = supabase.from('subscription_members').select('student_id,class_id,weekdays,subscriptions!inner(start_month,end_month,cancelled_at,company_id)')
+      .not('class_id', 'is', null).is('subscriptions.cancelled_at', null).limit(10000);
+    if (companyId !== 'all') pm = pm.eq('subscriptions.company_id', companyId);
+    const [rc, rs, re, rp] = await Promise.all([c, s, e, pm]);
     setError(rc.error?.message ?? rs.error?.message ?? re.error?.message ?? null);
-    setClasses((rc.data as Cls[]) ?? []); setStudents((rs.data as Stu[]) ?? []); setEnr((re.data as Enr[]) ?? []);
+    type PMRow = { student_id: string; class_id: string; weekdays: number[]; subscriptions: { start_month: string; end_month: string | null } };
+    const planEnr: Enr[] = ((rp.data as unknown as PMRow[]) ?? []).map(x => ({ student_id: x.student_id, class_id: x.class_id, month: '', weekdays: x.weekdays,
+      plan: { start: x.subscriptions.start_month, end: x.subscriptions.end_month } }));
+    setClasses((rc.data as Cls[]) ?? []); setStudents((rs.data as Stu[]) ?? []); setEnr([...((re.data as Enr[]) ?? []), ...planEnr]);
   }, [companyId]);
   useEffect(() => { load(); }, [load]);
   const current = tabs.some(t => t[0] === tab) ? tab : tabs[0][0];
@@ -66,7 +79,7 @@ export default function Students() {
       </div>
       {error && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       {current === 'lista' && <RollCall classes={classes} students={students} enr={enr} onOpen={setOpen} />}
-      {current === 'alumnas' && <StudentList classes={classes} students={students} enr={enr} onOpen={setOpen} />}
+      {current === 'alumnas' && <StudentList classes={classes} students={students} enr={enr} onOpen={st => { setOpen(st); if (!students.some(x => x.id === st.id)) load(); }} />}
       {current === 'clases' && <ClassList classes={classes} enr={enr} canCfg={canCfg} onChanged={load} companies={companies} />}
       {current === 'importar' && <EvoImport onDone={() => { load(); setTab('alumnas'); }} />}
       {open && <StudentCard s={open} classes={classes} enr={enr} canNotes={canNotes} canCfg={canCfg} onClose={() => setOpen(null)} onChanged={load} />}
@@ -167,7 +180,34 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
 }
 
 // ---------------------------------------------------------------- Lista de alumnas
+function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
+  const { companies, companyId } = useAuth();
+  const [f, setF] = useState({ company_id: companyId !== 'all' ? companyId : '', full_name: '', birth_date: '', phone: '', enrolled_on: todayMx() });
+  const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  async function save(ev: React.FormEvent) {
+    ev.preventDefault(); setBusy(true); setMsg(null);
+    const { data, error } = await supabase.from('students').insert({ company_id: f.company_id, full_name: f.full_name.trim().replace(/\s+/g, ' '),
+      birth_date: f.birth_date || null, phone: f.phone.trim() || null, enrolled_on: f.enrolled_on || null }).select('*').single();
+    setBusy(false); if (error) return setMsg(error.message); onCreated(data as Stu);
+  }
+  return (
+    <form onSubmit={save} className="flex flex-wrap items-end gap-2 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
+      <label className="text-xs">Sucursal<select required className={`${field} block`} value={f.company_id} onChange={e => setF({ ...f, company_id: e.target.value })}>
+        <option value="">Elige…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select></label>
+      <label className="text-xs">Nombre completo<input required autoFocus className={`${field} block w-64`} value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} /></label>
+      <label className="text-xs">Nacimiento<input type="date" className={`${field} block`} value={f.birth_date} onChange={e => setF({ ...f, birth_date: e.target.value })} /></label>
+      <label className="text-xs">Teléfono<input className={`${field} block w-36`} value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
+      <label className="text-xs">Inscripción<input type="date" className={`${field} block`} value={f.enrolled_on} onChange={e => setF({ ...f, enrolled_on: e.target.value })} /></label>
+      <button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">Guardar y abrir ficha</button>
+      {msg && <p className="w-full rounded bg-red-50 p-2 text-red-700">{msg}</p>}
+      <p className="w-full text-xs text-slate-500">En la ficha le asignas plan, grupo y días (Cobranza) y la ligas a su familia. Con eso ya aparece en el pase de lista de su grupo.</p>
+    </form>
+  );
+}
+
 function StudentList({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
+  const { can } = useAuth(); const canAdd = can('students', 'configure') || can('billing', 'edit');
+  const [adding, setAdding] = useState(false);
   const [q, setQ] = useState(''); const [fClass, setFClass] = useState(''); const [onlyActive, setOnlyActive] = useState(true);
   const today = todayMx();
   const cur = useMemo(() => classes.flatMap(c => rosterFor(enr, c.id, today).map(e => ({ ...e, c }))), [classes, enr, today]);
@@ -180,8 +220,10 @@ function StudentList({ classes, students, enr, onOpen }: { classes: Cls[]; stude
         <select className={field} value={fClass} onChange={e => setFClass(e.target.value)}><option value="">Todas las clases</option>
           {classes.map(c => <option key={c.id} value={c.id}>{c.activity} · {c.start_time}</option>)}</select>
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} />Sólo activas</label>
+        {canAdd && !adding && <button className="ml-auto rounded-lg bg-brand px-3 py-2 text-sm text-white" onClick={() => setAdding(true)}>+ Nueva alumna</button>}
         <span className="text-sm text-slate-500">{rows.length} alumnas</span>
       </div>
+      {adding && <NewStudent onCreated={st => { setAdding(false); onOpen(st); }} />}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Nombre</th><th className="px-3 py-2">Edad</th>
