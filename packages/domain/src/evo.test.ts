@@ -33,5 +33,7 @@ test('lee el reporte mensual de EVO', () => {
 
 test('horas en fracción de Excel y duración', () => {
   assert.equal(evoTime(16 / 24), '16:00'); assert.equal(evoTime('7:30'), '07:30');
+  assert.equal(evoTime('1/0/00 16:00'), '16:00'); assert.equal(evoTime('4:30 PM'), '16:30'); assert.equal(evoTime('16:00:00'), '16:00');
+  assert.equal(evoTime('02/06/2023'), null);
   assert.equal(classMinutes('16:00', '17:30'), 90);
 });
