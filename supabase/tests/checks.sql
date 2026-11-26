@@ -671,3 +671,37 @@ begin
   if (select count(*) from public.pay_deliveries where run_id = run) <> 2 then raise exception 'historial de entregas incompleto'; end if;
   raise notice 'OK: entregas de pago';
 end $$;
+
+-- 0033: seguimiento de empleados
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        admin uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        ind uuid; esc uuid; n uuid; ok boolean;
+begin
+  select id into ind from public.indicators where company_id = car and name = 'Puntualidad';
+  select id into esc from public.indicators where company_id = car and kind = 'escala' limit 1;
+  if ind is null or esc is null then raise exception 'no se creó el catálogo inicial'; end if;
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.indicator_marks (company_id, employee_id, indicator_id, date, value) values (car, c1, ind, app.today_mx(), 0);
+  insert into public.indicator_marks (company_id, employee_id, indicator_id, date, value) values (car, c1, ind, app.today_mx(), 1);
+  if (select value from public.indicator_marks_latest where employee_id = c1 and indicator_id = ind and date = app.today_mx()) <> 1 then raise exception 'no ganó la última marca'; end if;
+  ok := false; begin insert into public.indicator_marks (company_id, employee_id, indicator_id, date, value) values (car, c1, ind, app.today_mx(), 4); exception when others then ok := true; end;
+  if not ok then raise exception 'sí/no aceptó 4'; end if;
+  insert into public.indicator_marks (company_id, employee_id, indicator_id, date, value) values (car, c1, esc, app.today_mx(), 4);
+  insert into public.employee_notes (company_id, employee_id, visibility, body) values (car, c1, 'privada', 'Platicar sobre puntualidad') returning id into n;
+  insert into public.employee_notes (company_id, employee_id, visibility, body) values (car, c1, 'publica', 'Muy buena clase de barras');
+  update public.employee_notes set deleted_at = now() where id = n;
+  ok := false; begin update public.employee_notes set body = 'x' where id = n; exception when others then ok := true; end;
+  if not ok then raise exception 'se editó una nota borrada'; end if;
+  if not exists (select 1 from public.employee_notes where id = n) then raise exception 'dirección dejó de ver la nota borrada'; end if;
+  reset role;
+  perform set_config('request.jwt.claim.sub', admin::text, true);
+  set local role authenticated;
+  ok := false; begin insert into public.employee_notes (company_id, employee_id, visibility, body) values (car, c1, 'publica', 'x'); exception when others then ok := true; end;
+  if not ok then raise exception 'escribió nota sin permiso'; end if;
+  reset role;
+  raise notice 'OK: seguimiento de empleados';
+end $$;

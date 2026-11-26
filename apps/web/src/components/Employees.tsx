@@ -5,6 +5,7 @@ import { formatMXN, pesosToCents } from '../lib/money';
 import WorkSchedulePanel from './WorkSchedule';
 import { ImportEmployees, exportEmployees } from './EmployeesIO';
 import { effectiveFor, type Schedule } from './Companies';
+import { PersonFollowUp } from './FollowUp';
 
 type EState = 'activo' | 'suspendido' | 'baja';
 interface Dept { id: string; company_id: string; name: string; is_active: boolean }
@@ -259,6 +260,8 @@ function EmployeeForm({ emp, depts, groups, scheds, onClose, onSaved, onChanged,
         </form>
         {emp && emp.is_head_coach && user && ['director', 'admin', 'rrhh'].includes(user.role) && <HeadCoachPanel emp={emp} />}
         {emp && <NominaPanel emp={emp} scheds={scheds} onChanged={onChanged} />}
+        {emp && (can('followup') || can('followup', 'edit')) && <details className="border-t pt-4"><summary className="cursor-pointer text-sm font-semibold">Seguimiento</summary>
+          <div className="pt-2"><PersonFollowUp emp={emp} canWrite={can('followup', 'edit')} /></div></details>}
         {emp && can('payroll_hours') && <WorkSchedulePanel employeeId={emp.id} companyId={emp.company_id} />}
         {emp && can('salary') && <SalaryPanel emp={emp} />}
         {emp && can('payroll') && <LoansPanel emp={emp} />}

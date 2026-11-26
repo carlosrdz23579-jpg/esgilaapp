@@ -10,6 +10,7 @@ import Warmup from './Warmup';
 import Users from './Users';
 import CoachCalendar from './CoachCalendar';
 import Students from './Students';
+import FollowUp from './FollowUp';
 import Settings from './Settings';
 
 interface Mod { key: string; label: string; icon: string; visible: (a: ReturnType<typeof useAuth>) => boolean }
@@ -19,6 +20,7 @@ export const MODULES: Mod[] = [
   { key: 'empresas', label: 'Empresas', icon: '🏢', visible: a => a.can('companies') },
   { key: 'empleados', label: 'Empleados', icon: '👥', visible: a => a.can('employees') || a.headCoachOf.length > 0 },
   { key: 'alumnas', label: 'Alumnas', icon: '🤸', visible: a => ['view', 'edit', 'create', 'configure'].some(x => a.can('students', x)) },
+  { key: 'seguimiento', label: 'Seguimiento', icon: '📈', visible: ALWAYS },   // cada quien ve al menos el suyo
   { key: 'asistencia', label: 'Asistencia (checador)', icon: '⏱️', visible: a => a.can('payroll_hours') },
   { key: 'nomina', label: 'Nómina', icon: '🧾', visible: ALWAYS },   // cada quien ve al menos su propia nómina
   { key: 'reportes', label: 'Reportes', icon: '📊', visible: a => a.can('reports_financial') || a.can('reports_shared') },
@@ -68,7 +70,7 @@ export default function Shell() {
         </header>
         <main className="flex-1 p-4">
           <h2 className="mb-4 text-xl font-semibold">{current?.label}</h2>
-          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : current?.key === 'calentamiento' ? <Warmup /> : current?.key === 'usuarios' ? <Users /> : current?.key === 'calendario' ? <CoachCalendar /> : current?.key === 'config' ? <Settings /> : current?.key === 'alumnas' ? <Students /> : (
+          {current?.key === 'empleados' ? <Employees /> : current?.key === 'empresas' ? <Companies /> : current?.key === 'asistencia' ? <Attendance /> : current?.key === 'nomina' ? <Payroll /> : current?.key === 'efectivo' ? <Cash /> : current?.key === 'calentamiento' ? <Warmup /> : current?.key === 'usuarios' ? <Users /> : current?.key === 'calendario' ? <CoachCalendar /> : current?.key === 'config' ? <Settings /> : current?.key === 'alumnas' ? <Students /> : current?.key === 'seguimiento' ? <FollowUp /> : (
             <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">
               Módulo en construcción (aún sin funcionalidad). Empresas cargadas: {auth.companies.length}.
             </div>)}
