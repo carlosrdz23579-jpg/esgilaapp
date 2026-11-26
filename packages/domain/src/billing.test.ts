@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { monthlyCharge, payStage, siblingTargets, planChangeDifference, prepayQuote } from './billing.ts';
+import { monthlyCharge, payStage, siblingTargets, planChangeDifference, prepayQuote, checkCombo } from './billing.ts';
 
 test('etapas de pago por fecha', () => {
   assert.equal(payStage('2026-12', '2026-11-28').stage, 'pronto');
@@ -51,7 +51,8 @@ test('con beca no hay otro descuento (sí recargo)', () => {
   const adj = [{ label: 'Beca 30 %', mode: 'pct' as const, value: 3000, kind: 'beca' as const }, { label: 'Descuento', mode: 'monto' as const, value: 10000, kind: 'descuento' as const }];
   const early = monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-11-20', sibling: true, adjustments: adj });
   assert.deepEqual([early.adjustments.length, early.sibling, early.early, early.total], [1, 0, 0, 140000]);
-  assert.equal(monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-12', sibling: false, adjustments: adj }).total, 154000);
+  // paga el día 3: con beca, sin recargo
+  assert.equal(monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-03', sibling: false, adjustments: adj }).total, 140000);
   // la becada no cuenta para hermanos: su hermana queda sola y no lleva 15 %
   assert.deepEqual([...siblingTargets([{ id: 'a', familyId: 'F', price: 200000 }, { id: 'b', familyId: 'F', price: 150000, beca: true }])], []);
 });
@@ -69,4 +70,22 @@ test('pago por adelantado: descuento, total y reparto por mes', () => {
   assert.deepEqual([q.gross, q.discount, q.total], [1209000, 181350, 1027650]);
   assert.equal(q.perMonth.reduce((a, b) => a + b, 0), q.total); assert.equal(q.perMonth[0], 171275);
   const odd = prepayQuote(100001, 3, 0); assert.deepEqual(odd.perMonth, [100001, 100001, 100001]);
+});
+
+test('becada que paga del día 6 en adelante pierde la beca: plan completo + recargo', () => {
+  const adj = [{ label: 'Beca 50 %', mode: 'pct' as const, value: 5000, kind: 'beca' as const }];
+  const d6 = monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-06', sibling: false, adjustments: adj });
+  assert.deepEqual([d6.becaLost, d6.adjustments.length, d6.surcharge, d6.total], [true, 0, 10000, 210000]);
+  const d12 = monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-12', sibling: true, adjustments: adj });
+  assert.deepEqual([d12.sibling, d12.total], [0, 220000]);   // tampoco recupera el de hermanos
+  assert.equal(monthlyCharge({ price: 200000, month: '2026-12', payDate: '2026-12-05', sibling: false, adjustments: adj }).total, 100000);
+});
+
+test('doble disciplina: máximo 12 h en total y 8 h por disciplina (configurable)', () => {
+  const lim = { maxTotal: 12, perDiscipline: { Telas: { min: 1, max: 4 } } };
+  assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 8 }, { discipline: 'Parkour', hours: 4 }], lim), []);
+  assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 9 }, { discipline: 'Parkour', hours: 3 }], lim), ['Gimnasia Regular: máximo 8 h']);
+  assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 8 }, { discipline: 'Parkour', hours: 6 }], lim), ['El total es 14 h; el máximo es 12 h']);
+  assert.deepEqual(checkCombo([{ discipline: 'Gimnasia Regular', hours: 6 }, { discipline: 'Telas', hours: 5 }], lim), ['Telas: máximo 4 h']);
+  assert.deepEqual(checkCombo([{ discipline: 'Parkour', hours: 3 }], lim), ['Elige al menos dos disciplinas']);
 });

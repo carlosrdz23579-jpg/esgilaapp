@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { formatMXN } from '../lib/money';
-import { toCents, thisMonth, type Plan } from './Billing';
-import { monthlyCharge, siblingTargets, prepayQuote, DEFAULT_RULES, type BillingRules } from '@domain/billing';
+import { toCents, thisMonth, type Plan, type DiscRule } from './Billing';
+import { monthlyCharge, siblingTargets, prepayQuote, checkCombo, DEFAULT_RULES, type BillingRules } from '@domain/billing';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-3 py-1.5 text-sm text-white disabled:opacity-50';
@@ -15,7 +15,7 @@ const ml = (d: string) => `${MONTHS[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}`;
 interface Stu { id: string; company_id: string; full_name: string; family_id?: string | null }
 interface Sub { id: string; company_id: string; plan_id: string; student_id: string | null; family_id: string | null; start_month: string; end_month: string | null;
   replaces_id: string | null; cancelled_at: string | null; created_at: string }
-interface Mem { id: string; subscription_id: string; student_id: string; class_id: string | null; weekdays: number[] }
+interface Mem { id: string; subscription_id: string; student_id: string; class_id: string | null; weekdays: number[]; discipline: string | null; hours: number | null }
 interface Adj { id: string; subscription_id: string; kind: string; label: string; mode: 'pct' | 'monto'; value: number; from_month: string; to_month: string | null; cancelled_at: string | null }
 interface Grp { id: string; activity: string; start_time: string; end_time: string; capacity: number | null; is_active: boolean; discipline: string | null }
 
@@ -24,7 +24,7 @@ export default function StudentPlans({ s, onChanged }: { s: Stu; onChanged?: () 
   const { can } = useAuth();
   const canEdit = can('billing', 'edit'), canSee = canEdit || can('billing') || can('billing', 'configure');
   const [stu, setStu] = useState<Stu>(s);
-  const [plans, setPlans] = useState<Plan[]>([]); const [groups, setGroups] = useState<Grp[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]); const [groups, setGroups] = useState<Grp[]>([]); const [drules, setDrules] = useState<DiscRule[]>([]);
   const [subs, setSubs] = useState<Sub[]>([]); const [mems, setMems] = useState<Mem[]>([]); const [adjs, setAdjs] = useState<Adj[]>([]);
   const [family, setFamily] = useState<{ id: string; name: string } | null>(null); const [siblings, setSiblings] = useState<Stu[]>([]);
   const [msg, setMsg] = useState<string | null>(null); const [adding, setAdding] = useState(false);
@@ -32,11 +32,12 @@ export default function StudentPlans({ s, onChanged }: { s: Stu; onChanged?: () 
   const load = useCallback(async () => {
     const st = await supabase.from('students').select('id,company_id,full_name,family_id').eq('id', s.id).single();
     const me = (st.data as Stu) ?? s; setStu(me);
-    const [p, g, m1] = await Promise.all([
+    const [p, g, m1, dr] = await Promise.all([
       supabase.from('plans_v').select('*').eq('company_id', s.company_id).eq('is_active', true).order('discipline').order('sort'),
       supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,is_active,discipline').eq('company_id', s.company_id).eq('is_active', true).order('activity').order('start_time'),
-      supabase.from('subscription_members').select('*').eq('student_id', s.id)]);
-    setPlans((p.data as Plan[]) ?? []); setGroups((g.data as Grp[]) ?? []);
+      supabase.from('subscription_members').select('*').eq('student_id', s.id),
+      supabase.from('discipline_rules').select('*').eq('company_id', s.company_id)]);
+    setPlans((p.data as Plan[]) ?? []); setGroups((g.data as Grp[]) ?? []); setDrules((dr.data as DiscRule[]) ?? []);
     const memberSubIds = ((m1.data as Mem[]) ?? []).map(x => x.subscription_id);
     let q = supabase.from('subscriptions').select('*').is('cancelled_at', null).order('start_month', { ascending: false });
     q = me.family_id ? q.or(`student_id.eq.${s.id},family_id.eq.${me.family_id}${memberSubIds.length ? `,id.in.(${memberSubIds.join(',')})` : ''}`)
@@ -91,14 +92,14 @@ export default function StudentPlans({ s, onChanged }: { s: Stu; onChanged?: () 
               <span className="text-xs text-slate-500">desde {ml(x.start_month)}{x.end_month ? ` hasta ${ml(x.end_month)}` : ''}{x.replaces_id ? ' · cambio de plan' : ''}</span>
               {canEdit && <span className="ml-auto space-x-3 text-xs"><button className="text-slate-600" onClick={() => end(x)}>Terminar</button><button className="text-red-600" onClick={() => cancel(x)}>Cancelar</button></span>}
             </div>
-            {ms.map(m => <p key={m.id} className="text-xs text-slate-600">{m.student_id === s.id ? '' : `${siblings.find(z => z.id === m.student_id)?.full_name ?? 'Integrante'}: `}
+            {ms.map(m => <p key={m.id} className="text-xs text-slate-600">{m.student_id === s.id ? '' : `${siblings.find(z => z.id === m.student_id)?.full_name ?? 'Integrante'}: `}{m.discipline ? `${m.discipline} ${m.hours} h · ` : ''}
               {grp(m.class_id) ? `${grp(m.class_id)!.activity} ${grp(m.class_id)!.start_time}` : 'sin grupo'}{m.weekdays.length ? ` · ${m.weekdays.map(w => WD[w]).join(', ')}` : ''}</p>)}
             <Adjustments sub={x} adjs={adjs.filter(a => a.subscription_id === x.id)} canEdit={canEdit} onChanged={done} />
             <Prepayments sub={x} price={p?.price_cents ?? null} hasBeca={adjs.some(a => a.subscription_id === x.id && a.kind === 'beca')} canEdit={canEdit} onChanged={done} />
           </div>);
       })}
       {!current.length && !adding && <p className="text-sm text-slate-400">Sin plan asignado.</p>}
-      {adding && <AssignPlan s={stu} family={family} plans={plans} groups={groups} subs={subs} onCancel={() => setAdding(false)} onDone={() => { setAdding(false); done(); }} />}
+      {adding && <AssignPlan s={stu} family={family} plans={plans} groups={groups} subs={subs} drules={drules} onCancel={() => setAdding(false)} onDone={() => { setAdding(false); done(); }} />}
       {past.length > 0 && <details className="text-xs text-slate-500"><summary className="cursor-pointer">Planes anteriores ({past.length})</summary>
         {past.map(x => <p key={x.id}>{plan(x.plan_id)?.discipline} · {plan(x.plan_id)?.name ?? 'plan inactivo'} — {ml(x.start_month)} a {x.end_month ? ml(x.end_month) : '…'}</p>)}</details>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
@@ -142,11 +143,20 @@ function FamilyBox({ stu, family, siblings, canEdit, onChanged }: { stu: Stu; fa
 }
 
 // ---------------------------------------------------------------- Asignar plan (con cambio de plan)
-function AssignPlan({ s, family, plans, groups, subs, onCancel, onDone }: { s: Stu; family: { id: string } | null; plans: Plan[]; groups: Grp[]; subs: Sub[]; onCancel: () => void; onDone: () => void }) {
+function AssignPlan({ s, family, plans, groups, subs, drules, onCancel, onDone }: { s: Stu; family: { id: string } | null; plans: Plan[]; groups: Grp[]; subs: Sub[];
+  drules: DiscRule[]; onCancel: () => void; onDone: () => void }) {
   const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [from, setFrom] = useState(thisMonth()); const [classId, setClassId] = useState('');
   const [days, setDays] = useState<number[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
   const [ask, setAsk] = useState<Sub | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const p = plans.find(x => x.id === planId);
+  const combo = drules.find(r => r.discipline === disc && r.is_combo);
+  const [parts, setParts] = useState<{ discipline: string; hours: string; classId: string; days: number[] }[]>([
+    { discipline: '', hours: '', classId: '', days: [] }, { discipline: '', hours: '', classId: '', days: [] }]);
+  const total = parts.reduce((n, x) => n + (+x.hours || 0), 0);
+  const comboErrs = combo ? checkCombo(parts.map(x => ({ discipline: x.discipline, hours: +x.hours })), {
+    maxTotal: Number(combo.max_total_hours), minTotal: combo.min_total_hours ? Number(combo.min_total_hours) : undefined,
+    perDiscipline: Object.fromEntries(drules.filter(r => !r.is_combo).map(r => [r.discipline, { min: Number(r.min_hours), max: Number(r.max_hours) }])) }) : [];
+  const comboPlan = combo ? plans.find(x => x.discipline === disc && Number(x.hours_per_week) === total && x.is_active) : undefined;
+  const p = combo ? comboPlan : plans.find(x => x.id === planId);
   useEffect(() => {
     Promise.all(groups.map(g => supabase.rpc('group_taken', { p_class: g.id, p_month: `${from}-01` })))
       .then(rs => setTaken(Object.fromEntries(groups.map((g, i) => [g.id, (rs[i].data as number) ?? 0]))));
@@ -162,7 +172,9 @@ function AssignPlan({ s, family, plans, groups, subs, onCancel, onDone }: { s: S
     const { data, error } = await supabase.from('subscriptions').insert({ company_id: s.company_id, plan_id: p.id, start_month: `${from}-01`,
       ...(p.kind === 'familiar' ? { family_id: family!.id } : { student_id: s.id }), replaces_id: mode === 'cambio' ? clash!.id : null }).select('id').single();
     if (error) { setBusy(false); return setMsg(error.message); }
-    const m = await supabase.from('subscription_members').insert({ subscription_id: data.id, student_id: s.id, class_id: classId || null, weekdays: days });
+    const m = combo
+      ? await supabase.from('subscription_members').insert(parts.map(x => ({ subscription_id: data.id, student_id: s.id, class_id: x.classId || null, weekdays: x.days, discipline: x.discipline, hours: +x.hours })))
+      : await supabase.from('subscription_members').insert({ subscription_id: data.id, student_id: s.id, class_id: classId || null, weekdays: days });
     if (m.error) { await supabase.from('subscriptions').update({ cancelled_at: new Date().toISOString() }).eq('id', data.id); setBusy(false); return setMsg(m.error.message); }
     if (mode === 'cambio' && clash) {
       // el anterior cubre hasta el mes previo; si empezó este mismo mes, convive ese mes y se cobra sólo la diferencia
@@ -178,24 +190,42 @@ function AssignPlan({ s, family, plans, groups, subs, onCancel, onDone }: { s: S
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs">Disciplina<select className={`${field} block`} value={disc} onChange={e => { setDisc(e.target.value); setPlanId(''); setClassId(''); }}>
           <option value="">Elige…</option>{disciplines.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
-        <label className="text-xs">Plan<select className={`${field} block`} disabled={!disc} value={planId} onChange={e => setPlanId(e.target.value)}>
+        {!combo && <label className="text-xs">Plan<select className={`${field} block`} disabled={!disc} value={planId} onChange={e => setPlanId(e.target.value)}>
           <option value="">Elige…</option>{plans.filter(x => x.discipline === disc && x.kind !== 'familiar').map(x =>
-            <option key={x.id} value={x.id}>{x.name} · {x.price_cents != null ? formatMXN(x.price_cents) : 'sin precio'}</option>)}</select></label>
+            <option key={x.id} value={x.id}>{x.name} · {x.price_cents != null ? formatMXN(x.price_cents) : 'sin precio'}</option>)}</select></label>}
         <label className="text-xs">Desde<input type="month" className={`${field} block`} value={from} onChange={e => setFrom(e.target.value)} /></label>
-        <label className="text-xs">Grupo<select className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
+        {!combo && <label className="text-xs">Grupo<select className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
           <option value="">Sin grupo por ahora</option>{groups.filter(g => !disc || !groups.some(x => x.discipline === disc) || g.discipline === disc).map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
-            return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>
+            return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>}
       </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-slate-500">Días que viene:</span>
+      {!combo && <div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-slate-500">Días que viene:</span>
         {[1, 2, 3, 4, 5, 6, 0].map(d => <label key={d} className="flex items-center gap-1"><input type="checkbox" checked={days.includes(d)}
-          onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{WD[d]}</label>)}</div>
+          onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{WD[d]}</label>)}</div>}
+      {combo && <div className="space-y-2 rounded-lg bg-purple-50 p-2 text-xs">
+        {parts.map((x, i) => { const set = (v: Partial<typeof x>) => setParts(parts.map((y, j) => j === i ? { ...y, ...v } : y));
+          return <div key={i} className="flex flex-wrap items-end gap-2">
+            <label>Disciplina {i + 1}<select className={`${field} block`} value={x.discipline} onChange={e => set({ discipline: e.target.value, classId: '' })}>
+              <option value="">Elige…</option>{[...new Set(plans.map(z => z.discipline))].filter(d => !drules.some(r => r.discipline === d && r.is_combo)).map(d => <option key={d} value={d}>{d}</option>)}</select></label>
+            <label>Horas<input type="number" step="0.5" min={0.5} className={`${field} block w-20`} value={x.hours} onChange={e => set({ hours: e.target.value })} /></label>
+            <label>Grupo<select className={`${field} block`} value={x.classId} onChange={e => set({ classId: e.target.value })}><option value="">Sin grupo</option>
+              {groups.filter(g => !x.discipline || !groups.some(z => z.discipline === x.discipline) || g.discipline === x.discipline).map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
+                return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time} · {t}{g.capacity ? `/${g.capacity}` : ''}</option>; })}</select></label>
+            <span className="flex gap-1 pb-2">{[1, 2, 3, 4, 5, 6, 0].map(d => <label key={d} className="flex items-center"><input type="checkbox" checked={x.days.includes(d)}
+              onChange={e => set({ days: e.target.checked ? [...x.days, d].sort() : x.days.filter(z => z !== d) })} />{WD[d]}</label>)}</span>
+            {parts.length > 2 && <button className="pb-2 text-red-600" onClick={() => setParts(parts.filter((_, j) => j !== i))}>Quitar</button>}
+          </div>; })}
+        <button className="text-brand" onClick={() => setParts([...parts, { discipline: '', hours: '', classId: '', days: [] }])}>+ Otra disciplina</button>
+        <p>Total: <b>{total} h</b> de máximo {Number(combo.max_total_hours)} h{comboPlan ? <> · plan <b>{comboPlan.name}</b> · {comboPlan.price_cents != null ? formatMXN(comboPlan.price_cents) : 'sin precio'}</>
+          : total > 0 && <span className="text-red-700"> · no hay plan de {disc} de {total} h en el catálogo</span>}</p>
+        {comboErrs.length > 0 && <ul className="list-disc pl-4 text-red-700">{comboErrs.map(e => <li key={e}>{e}</li>)}</ul>}
+      </div>}
       {ask && p && <div className="rounded-lg bg-amber-50 p-3">
         <p>Ya tiene <b>{plans.find(x => x.id === ask.plan_id)?.name ?? 'otro plan'}</b> en {ml(`${from}-01`)}. ¿Qué quieres hacer?</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button disabled={busy} className={btn} onClick={() => save('cambio')}>Cambiar de plan (se cobra la diferencia)</button>
           <button disabled={busy} className="rounded-lg border px-3 py-1.5" onClick={() => save('agregar')}>Agregar como segundo plan</button>
           <button className="text-slate-500" onClick={() => setAsk(null)}>Regresar</button></div></div>}
-      {!ask && <div className="flex gap-2"><button disabled={!p || busy} className={btn} onClick={() => save(null)}>Asignar</button><button className="text-slate-500" onClick={onCancel}>Cancelar</button></div>}
+      {!ask && <div className="flex gap-2"><button disabled={!p || busy || comboErrs.length > 0} className={btn} onClick={() => save(null)}>Asignar</button><button className="text-slate-500" onClick={onCancel}>Cancelar</button></div>}
       {msg && <p className="rounded bg-red-50 p-2 text-red-700">{msg}</p>}
     </div>
   );

@@ -11,6 +11,7 @@ export const thisMonth = () => todayMx().slice(0, 7);
 export const toCents = (s: string) => Math.round(parseFloat(s.replace(/[$,\s]/g, '') || '0') * 100);
 const CATS: Record<string, string> = { indumentaria: 'Indumentaria', accesorio: 'Accesorio', tiendita: 'Tiendita', evento: 'Evento', servicio: 'Servicio', otro: 'Otro' };
 
+export interface DiscRule { company_id: string; discipline: string; is_combo: boolean; min_hours: number; max_hours: number; max_total_hours: number; min_total_hours: number | null }
 export interface Plan { id: string; company_id: string; discipline: string; name: string; hours_per_week: number | null; kind: 'individual' | 'familiar';
   max_members: number | null; is_active: boolean; sort: number; price_cents: number | null; active_subs: number }
 
@@ -51,11 +52,19 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [plans, setPlans] = useState<Plan[]>([]); const [msg, setMsg] = useState<string | null>(null);
   const [from, setFrom] = useState(thisMonth());
   const [hist, setHist] = useState<{ plan: Plan; rows: { effective_month: string; price_cents: number; created_at: string }[] } | null>(null);
-  const [newDisc, setNewDisc] = useState<{ name: string; rows: { hours: string; price: string }[] } | null>(null);
+  const [newDisc, setNewDisc] = useState<{ name: string; combo: boolean; maxTotal: string; rows: { hours: string; price: string }[] } | null>(null);
+  const [rules, setRules] = useState<DiscRule[]>([]);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('plans_v').select('*').eq('company_id', co).order('discipline').order('hours_per_week').order('name');
-    if (error) setMsg(error.message); setPlans((data as Plan[]) ?? []);
+    const [p, r] = await Promise.all([supabase.from('plans_v').select('*').eq('company_id', co).order('discipline').order('hours_per_week').order('name'),
+      supabase.from('discipline_rules').select('*').eq('company_id', co)]);
+    if (p.error) setMsg(p.error.message); setPlans((p.data as Plan[]) ?? []); setRules((r.data as DiscRule[]) ?? []);
   }, [co]);
+  async function saveRule(discipline: string, v: Partial<DiscRule>) {
+    const cur = rules.find(r => r.discipline === discipline);
+    const { error } = await supabase.from('discipline_rules').upsert({ company_id: co, discipline, is_combo: cur?.is_combo ?? false, min_hours: cur?.min_hours ?? 1,
+      max_hours: cur?.max_hours ?? 8, max_total_hours: cur?.max_total_hours ?? 12, min_total_hours: cur?.min_total_hours ?? null, ...v, updated_at: new Date().toISOString() });
+    if (error) setMsg(error.message); else load();
+  }
   useEffect(() => { load(); }, [load]);
   const disciplines = [...new Set(plans.map(p => p.discipline))];
 
@@ -79,6 +88,7 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   }
   async function saveDisc() {
     if (!newDisc) return; setMsg(null);
+    if (newDisc.combo) await saveRule(newDisc.name.trim(), { is_combo: true, max_total_hours: +newDisc.maxTotal || 12 });
     for (const r of newDisc.rows.filter(r => r.hours || r.price)) { const e = await addTier(newDisc.name.trim(), r.hours, r.price); if (e) return setMsg(e); }
     setNewDisc(null); load();
   }
@@ -88,12 +98,19 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
       {canCfg && <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 text-sm shadow-sm">
         <span>Los precios que cambies aplican desde</span><input type="month" className={field} value={from} onChange={e => setFrom(e.target.value)} />
         <span className="text-xs text-slate-500">· los meses anteriores conservan su precio (queda historial).</span>
-        <button className={`${btn} ml-auto`} onClick={() => setNewDisc({ name: '', rows: [{ hours: '1', price: '' }, { hours: '2', price: '' }, { hours: '3', price: '' }, { hours: '4', price: '' }] })}>+ Nueva disciplina</button>
+        <button className="ml-auto rounded-lg border border-brand px-3 py-2 text-sm text-brand" onClick={() => setNewDisc({ name: 'Doble disciplina', combo: true, maxTotal: '12',
+          rows: [{ hours: '3', price: '' }, { hours: '5', price: '' }, { hours: '7', price: '' }, { hours: '9', price: '' }, { hours: '12', price: '' }] })}>+ Doble disciplina</button>
+        <button className={btn} onClick={() => setNewDisc({ name: '', combo: false, maxTotal: '12', rows: [{ hours: '1', price: '' }, { hours: '2', price: '' }, { hours: '3', price: '' }, { hours: '4', price: '' }] })}>+ Nueva disciplina</button>
       </div>}
 
       {newDisc && <div className="space-y-2 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
-        <label className="text-xs">Disciplina<input autoFocus className={`${field} block w-64`} placeholder="Baby Gym" value={newDisc.name} onChange={e => setNewDisc({ ...newDisc, name: e.target.value })} /></label>
-        <table className="text-sm"><thead className="text-left text-xs text-slate-500"><tr><th className="pr-3">Horas por semana</th><th>Precio mensual</th></tr></thead>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs">Disciplina<input autoFocus className={`${field} block w-64`} placeholder="Baby Gym" value={newDisc.name} onChange={e => setNewDisc({ ...newDisc, name: e.target.value })} /></label>
+          <label className="flex items-center gap-1 pb-2 text-xs"><input type="checkbox" checked={newDisc.combo} onChange={e => setNewDisc({ ...newDisc, combo: e.target.checked })} />Es combinación de disciplinas (doble disciplina)</label>
+          {newDisc.combo && <label className="text-xs">Máximo total de horas<input type="number" className={`${field} block w-20`} value={newDisc.maxTotal} onChange={e => setNewDisc({ ...newDisc, maxTotal: e.target.value })} /></label>}
+        </div>
+        {newDisc.combo && <p className="text-xs text-slate-500">Las filas son las horas TOTALES de la combinación y su precio. Al asignarla se escogen las disciplinas y las horas de cada una.</p>}
+        <table className="text-sm"><thead className="text-left text-xs text-slate-500"><tr><th className="pr-3">{newDisc.combo ? 'Horas totales por semana' : 'Horas por semana'}</th><th>Precio mensual</th></tr></thead>
           <tbody>{newDisc.rows.map((r, i) => <tr key={i}>
             <td className="py-1 pr-3"><input type="number" step="0.5" min={0.5} className={`${field} w-24`} value={r.hours} onChange={e => setNewDisc({ ...newDisc, rows: newDisc.rows.map((x, j) => j === i ? { ...x, hours: e.target.value } : x) })} /></td>
             <td className="py-1"><input className={`${field} w-28`} placeholder="$" value={r.price} onChange={e => setNewDisc({ ...newDisc, rows: newDisc.rows.map((x, j) => j === i ? { ...x, price: e.target.value } : x) })} /></td>
@@ -103,6 +120,7 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
       </div>}
 
       {disciplines.map(d => <Discipline key={d} d={d} list={plans.filter(p => p.discipline === d)} canCfg={canCfg}
+        rule={rules.find(r => r.discipline === d)} hasCombo={rules.some(r => r.is_combo)} onRule={v => saveRule(d, v)}
         onPrice={setPrice} onPatch={patch} onHist={showHist}
         onAdd={async (h, pr, n) => { setMsg(null); const e = await addTier(d, h, pr, n); if (e) setMsg(e); else load(); }} />)}
       {!plans.length && !newDisc && <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">Aún no hay planes. Empieza con "+ Nueva disciplina".</p>}
@@ -116,14 +134,21 @@ function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   );
 }
 
-function Discipline({ d, list, canCfg, onPrice, onPatch, onHist, onAdd }: { d: string; list: Plan[]; canCfg: boolean;
+function Discipline({ d, list, canCfg, rule, hasCombo, onRule, onPrice, onPatch, onHist, onAdd }: { d: string; list: Plan[]; canCfg: boolean;
+  rule?: DiscRule; hasCombo: boolean; onRule: (v: Partial<DiscRule>) => void;
   onPrice: (p: Plan, v: string) => void; onPatch: (p: Plan, v: Partial<Plan>) => void; onHist: (p: Plan) => void; onAdd: (h: string, price: string, name: string) => void }) {
   const [row, setRow] = useState({ hours: '', price: '', name: '' });
   return (
     <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
       <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2 text-sm normal-case text-slate-800">{d}</th>
-          <th className="px-3 py-2">Horas/sem</th><th className="px-3 py-2 text-right">Precio mensual</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
+        <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2 text-sm normal-case text-slate-800">{d}
+          {rule?.is_combo
+            ? <span className="ml-2 text-xs font-normal text-purple-700">combinación · máximo total {canCfg
+              ? <input type="number" className="w-14 rounded border px-1" defaultValue={rule.max_total_hours} onBlur={e => +e.target.value !== Number(rule.max_total_hours) && onRule({ max_total_hours: +e.target.value })} /> : rule.max_total_hours} h</span>
+            : hasCombo && <span className="ml-2 text-xs font-normal text-slate-500">en doble disciplina: de {canCfg
+              ? <input type="number" step="0.5" className="w-12 rounded border px-1" defaultValue={rule?.min_hours ?? 1} onBlur={e => +e.target.value !== Number(rule?.min_hours ?? 1) && onRule({ min_hours: +e.target.value })} /> : rule?.min_hours ?? 1} a {canCfg
+              ? <input type="number" step="0.5" className="w-12 rounded border px-1" defaultValue={rule?.max_hours ?? 8} onBlur={e => +e.target.value !== Number(rule?.max_hours ?? 8) && onRule({ max_hours: +e.target.value })} /> : rule?.max_hours ?? 8} h</span>}</th>
+          <th className="px-3 py-2">{rule?.is_combo ? 'Horas totales' : 'Horas/sem'}</th><th className="px-3 py-2 text-right">Precio mensual</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
         <tbody>{list.map(p => (
           <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
             <td className="px-3 py-1.5">{canCfg ? <input className="w-56 rounded border px-2 py-1" defaultValue={p.name} onBlur={e => e.target.value.trim() && e.target.value !== p.name && onPatch(p, { name: e.target.value.trim() })} /> : p.name}</td>
@@ -290,7 +315,7 @@ function Rules({ co, canCfg }: { co: string; canCfg: boolean }) {
         <p>Desde el día {dayIn('surcharge1_day')}: {pctIn('surcharge1_bps')} % de recargo · desde el día {dayIn('surcharge2_day')}: {pctIn('surcharge2_bps')} % de recargo</p>
         <p>Hermanos (plan familiar): se suman los planes de las hermanas; {pctIn('sibling_bps')} % al plan más barato (con 3 o más, a todas menos la del plan más caro) y el pronto pago sólo al más caro. Cuenta entre sucursales.</p>
         <p>Pago por adelantado: {pctIn('prepay_bps')} % de descuento sugerido (se puede ajustar en cada pago) y el precio queda congelado esos meses.</p>
-        <p className="text-xs text-slate-500">Quien tiene beca no lleva ningún otro descuento (ni hermanos, ni pronto pago, ni adelanto); los recargos sí aplican, sobre lo que queda después de la beca.</p>
+        <p className="text-xs text-slate-500">Quien tiene beca no lleva ningún otro descuento (ni hermanos, ni pronto pago, ni adelanto). Si paga ya con recargo (desde el primer día de recargo), ese mes pierde la beca: se cobra el plan completo más el recargo.</p>
         {canCfg && <button className={btn} onClick={saveRules}>Guardar reglas</button>}
       </section>
       <section className="space-y-2 rounded-xl bg-white p-4 text-sm shadow-sm">

@@ -7,6 +7,7 @@
 //    llevan 15 % y a ellas NO se les aplica pronto pago. Cuenta aunque estén en distintas sucursales.
 //  · Becas y descuentos recurrentes (porcentaje o cantidad) se aplican primero, sobre el precio del plan.
 //  · Quien tiene BECA no lleva ningún otro descuento (ni descuentos recurrentes, ni hermanos, ni pronto pago).
+//    Si paga ya con recargo (día 6 en adelante) PIERDE la beca ese mes: se cobra el plan completo + el recargo.
 //  · Los recargos se calculan sobre lo que queda después de becas y hermanos.
 //  · Familia: se suman los planes de las hermanas; el 15 % va al plan más barato y el pronto pago sólo al más caro.
 //  · Pago por adelantado: N meses con un descuento especial y el precio congelado durante esos meses.
@@ -23,7 +24,7 @@ export interface Adjustment { label: string; mode: 'pct' | 'monto'; value: numbe
 
 export interface ChargeBreakdown {
   base: number; adjustments: { label: string; amount: number }[]; sibling: number;
-  early: number; surcharge: number; surchargeBps: number; total: number;
+  early: number; surcharge: number; surchargeBps: number; total: number; becaLost: boolean;
 }
 
 const pct = (amount: number, bps: number) => Math.round((amount * bps) / 10000);
@@ -45,17 +46,19 @@ export function monthlyCharge(o: { price: number; month: string; payDate: string
   adjustments?: Adjustment[]; rules?: BillingRules }): ChargeBreakdown {
   const rules = o.rules ?? DEFAULT_RULES;
   let amount = o.price;
-  const all = o.adjustments ?? [];
-  const hasBeca = all.some(a => a.kind === 'beca');
+  const st = payStage(o.month, o.payDate, rules);
+  const all0 = o.adjustments ?? [];
+  const becaLost = st.stage === 'recargo' && all0.some(a => a.kind === 'beca');
+  const all = becaLost ? [] : all0;
+  const hasBeca = becaLost || all.some(a => a.kind === 'beca');
   const adjustments = (hasBeca ? all.filter(a => a.kind === 'beca') : all).map(a => {
     const off = Math.min(amount, a.mode === 'pct' ? pct(amount, a.value) : a.value);
     amount -= off; return { label: a.label, amount: -off };
   });
   const sibling = o.sibling && !hasBeca ? -pct(amount, rules.siblingBps) : 0; amount += sibling;
-  const st = payStage(o.month, o.payDate, rules);
   const early = st.stage === 'pronto' && !o.sibling && !hasBeca ? -pct(amount, rules.earlyBps) : 0; amount += early;
   const surcharge = st.stage === 'recargo' ? pct(amount, st.bps) : 0; amount += surcharge;
-  return { base: o.price, adjustments, sibling, early, surcharge, surchargeBps: st.stage === 'recargo' ? st.bps : 0, total: amount };
+  return { base: o.price, adjustments, sibling, early, surcharge, surchargeBps: st.stage === 'recargo' ? st.bps : 0, total: amount, becaLost };
 }
 
 /** Qué suscripciones llevan descuento de hermanos: en cada familia, todas menos la de mayor precio.
@@ -81,4 +84,24 @@ export function prepayQuote(price: number, months: number, discountBps: number) 
   const total = gross - pct(gross, discountBps);
   const per = Math.floor(total / months), extra = total - per * months;
   return { gross, discount: gross - total, total, perMonth: Array.from({ length: months }, (_, i) => per + (i < extra ? 1 : 0)) };
+}
+
+// ---------------------------------------------------------------- Doble disciplina
+export interface ComboLimits { maxTotal: number; minTotal?: number; perDiscipline: Record<string, { min: number; max: number }>; defaultMin?: number; defaultMax?: number }
+/** Revisa una combinación de disciplinas: 2 o más distintas, horas de cada una dentro de su rango y total dentro del máximo. */
+export function checkCombo(parts: { discipline: string; hours: number }[], lim: ComboLimits): string[] {
+  const errs: string[] = [];
+  const ds = parts.map(p => p.discipline);
+  if (parts.length < 2) errs.push('Elige al menos dos disciplinas');
+  if (new Set(ds).size !== ds.length) errs.push('Cada disciplina va una sola vez');
+  for (const p of parts) {
+    const r = lim.perDiscipline[p.discipline] ?? { min: lim.defaultMin ?? 1, max: lim.defaultMax ?? 8 };
+    if (!(p.hours > 0)) errs.push(`${p.discipline || 'Disciplina'}: pon las horas`);
+    else if (p.hours < r.min) errs.push(`${p.discipline}: mínimo ${r.min} h`);
+    else if (p.hours > r.max) errs.push(`${p.discipline}: máximo ${r.max} h`);
+  }
+  const total = parts.reduce((n, p) => n + (p.hours || 0), 0);
+  if (total > lim.maxTotal) errs.push(`El total es ${total} h; el máximo es ${lim.maxTotal} h`);
+  if (lim.minTotal && total < lim.minTotal) errs.push(`El total es ${total} h; el mínimo es ${lim.minTotal} h`);
+  return errs;
 }

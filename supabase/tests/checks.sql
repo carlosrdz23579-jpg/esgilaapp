@@ -780,3 +780,28 @@ begin
   reset role;
   raise notice 'OK: pago por adelantado';
 end $$;
+
+-- 0038: doble disciplina
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid; st uuid; sub uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.discipline_rules (company_id, discipline, is_combo, max_total_hours) values (vin, 'Doble disciplina', true, 12);
+  insert into public.discipline_rules (company_id, discipline, max_hours) values (vin, 'Telas', 4);
+  insert into public.plans (company_id, discipline, name, hours_per_week) values (vin, 'Doble disciplina', '12 horas por semana', 12) returning id into pl;
+  insert into public.students (company_id, full_name) values (vin, 'Combinada') returning id into st;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, st, '2026-12-01') returning id into sub;
+  insert into public.subscription_members (subscription_id, student_id, discipline, hours) values (sub, st, 'Gimnasia Regular', 8);
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, discipline, hours) values (sub, st, 'Telas', 5); exception when others then ok := true; end;
+  if not ok then raise exception 'Telas pasó su máximo'; end if;
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, discipline, hours) values (sub, st, 'Gimnasia Regular', 2); exception when others then ok := true; end;
+  if not ok then raise exception 'disciplina repetida'; end if;
+  insert into public.subscription_members (subscription_id, student_id, discipline, hours) values (sub, st, 'Parkour', 4);
+  ok := false; begin insert into public.subscription_members (subscription_id, student_id, discipline, hours) values (sub, st, 'Telas', 1); exception when others then ok := true; end;
+  if not ok then raise exception 'rebasó 12 horas'; end if;
+  reset role;
+  raise notice 'OK: doble disciplina';
+end $$;
