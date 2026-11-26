@@ -183,24 +183,69 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
 function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
   const { companies, companyId } = useAuth();
   const [f, setF] = useState({ company_id: companyId !== 'all' ? companyId : '', full_name: '', birth_date: '', phone: '', enrolled_on: todayMx() });
+  const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [classId, setClassId] = useState(''); const [days, setDays] = useState<number[]>([]);
+  const [plans, setPlans] = useState<{ id: string; discipline: string; name: string; price_cents: number | null; kind: string }[]>([]);
+  const [groups, setGroups] = useState<{ id: string; activity: string; start_time: string; end_time: string; capacity: number | null; discipline: string | null }[]>([]);
+  const [combos, setCombos] = useState<string[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
   const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!f.company_id) return;
+    Promise.all([
+      supabase.from('plans_v').select('id,discipline,name,price_cents,kind').eq('company_id', f.company_id).eq('is_active', true).order('discipline').order('hours_per_week'),
+      supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,discipline').eq('company_id', f.company_id).eq('is_active', true).order('activity').order('start_time'),
+      supabase.from('discipline_rules').select('discipline').eq('company_id', f.company_id).eq('is_combo', true)]).then(async ([p, g, r]) => {
+      setPlans(p.data ?? []); const gs = g.data ?? []; setGroups(gs); setCombos((r.data ?? []).map(x => x.discipline));
+      const m = `${(f.enrolled_on || todayMx()).slice(0, 7)}-01`;
+      const cs = await Promise.all(gs.map(x => supabase.rpc('group_taken', { p_class: x.id, p_month: m })));
+      setTaken(Object.fromEntries(gs.map((x, k) => [x.id, (cs[k].data as number) ?? 0])));
+    });
+  }, [f.company_id, f.enrolled_on]);
+  const discs = [...new Set(plans.filter(p => p.kind !== 'familiar' && !combos.includes(p.discipline)).map(p => p.discipline))];
+  const gList = groups.filter(g => !disc || !groups.some(x => x.discipline === disc) || g.discipline === disc);
+  const DAYS: [number, string][] = [[1, 'Lun'], [2, 'Mar'], [3, 'Mié'], [4, 'Jue'], [5, 'Vie'], [6, 'Sáb']];
+
   async function save(ev: React.FormEvent) {
-    ev.preventDefault(); setBusy(true); setMsg(null);
+    ev.preventDefault(); setMsg(null);
+    if (!planId || !classId || !days.length) return setMsg('Elige plan, grupo y los días que viene.');
+    setBusy(true);
     const { data, error } = await supabase.from('students').insert({ company_id: f.company_id, full_name: f.full_name.trim().replace(/\s+/g, ' '),
       birth_date: f.birth_date || null, phone: f.phone.trim() || null, enrolled_on: f.enrolled_on || null }).select('*').single();
-    setBusy(false); if (error) return setMsg(error.message); onCreated(data as Stu);
+    if (error) { setBusy(false); return setMsg(`No se pudo dar de alta: ${error.message}`); }
+    const st = data as Stu;
+    const sub = await supabase.from('subscriptions').insert({ company_id: f.company_id, plan_id: planId, student_id: st.id,
+      start_month: `${(f.enrolled_on || todayMx()).slice(0, 7)}-01` }).select('id').single();
+    if (sub.error) { setBusy(false); setMsg(`Se dio de alta, pero no se asignó el plan: ${sub.error.message}`); return onCreated(st); }
+    const m = await supabase.from('subscription_members').insert({ subscription_id: sub.data.id, student_id: st.id, class_id: classId, weekdays: days });
+    setBusy(false);
+    if (m.error) { await supabase.from('subscriptions').update({ cancelled_at: new Date().toISOString() }).eq('id', sub.data.id); setMsg(`Se dio de alta, pero no se asignó el grupo: ${m.error.message}`); }
+    onCreated(st);
   }
   return (
-    <form onSubmit={save} className="flex flex-wrap items-end gap-2 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
-      <label className="text-xs">Sucursal<select required className={`${field} block`} value={f.company_id} onChange={e => setF({ ...f, company_id: e.target.value })}>
-        <option value="">Elige…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select></label>
-      <label className="text-xs">Nombre completo<input required autoFocus className={`${field} block w-64`} value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} /></label>
-      <label className="text-xs">Nacimiento<input type="date" className={`${field} block`} value={f.birth_date} onChange={e => setF({ ...f, birth_date: e.target.value })} /></label>
-      <label className="text-xs">Teléfono<input className={`${field} block w-36`} value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
-      <label className="text-xs">Inscripción<input type="date" className={`${field} block`} value={f.enrolled_on} onChange={e => setF({ ...f, enrolled_on: e.target.value })} /></label>
-      <button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">Guardar y abrir ficha</button>
-      {msg && <p className="w-full rounded bg-red-50 p-2 text-red-700">{msg}</p>}
-      <p className="w-full text-xs text-slate-500">En la ficha le asignas plan, grupo y días (Cobranza) y la ligas a su familia. Con eso ya aparece en el pase de lista de su grupo.</p>
+    <form onSubmit={save} className="space-y-3 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs">Sucursal<select required className={`${field} block`} value={f.company_id} onChange={e => { setF({ ...f, company_id: e.target.value }); setDisc(''); setPlanId(''); setClassId(''); }}>
+          <option value="">Elige…</option>{companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select></label>
+        <label className="text-xs">Nombre completo<input required autoFocus className={`${field} block w-64`} value={f.full_name} onChange={e => setF({ ...f, full_name: e.target.value })} /></label>
+        <label className="text-xs">Nacimiento<input type="date" className={`${field} block`} value={f.birth_date} onChange={e => setF({ ...f, birth_date: e.target.value })} /></label>
+        <label className="text-xs">Teléfono<input className={`${field} block w-36`} value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
+        <label className="text-xs">Inscripción<input type="date" className={`${field} block`} value={f.enrolled_on} onChange={e => setF({ ...f, enrolled_on: e.target.value })} /></label>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs">Disciplina<select required className={`${field} block`} value={disc} onChange={e => { setDisc(e.target.value); setPlanId(''); setClassId(''); }}>
+          <option value="">Elige…</option>{discs.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
+        <label className="text-xs">Plan<select required disabled={!disc} className={`${field} block`} value={planId} onChange={e => setPlanId(e.target.value)}>
+          <option value="">Elige…</option>{plans.filter(p => p.discipline === disc && p.kind !== 'familiar').map(p =>
+            <option key={p.id} value={p.id}>{p.name} · {p.price_cents != null ? `$${(p.price_cents / 100).toLocaleString('es-MX')}` : 'sin precio'}</option>)}</select></label>
+        <label className="text-xs">Grupo<select required disabled={!disc} className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
+          <option value="">Elige…</option>{gList.map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
+            return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>
+        <div className="text-xs"><span className="block">Días que viene</span><div className="flex gap-2 py-2">{DAYS.map(([d, l]) =>
+          <label key={d} className="flex items-center gap-1"><input type="checkbox" checked={days.includes(d)} onChange={e => setDays(e.target.checked ? [...days, d].sort() : days.filter(x => x !== d))} />{l}</label>)}</div></div>
+      </div>
+      {f.company_id && !discs.length && <p className="text-xs text-amber-700">Esta sucursal aún no tiene planes: créalos en Cobranza → Planes por disciplina.</p>}
+      <div className="flex items-center gap-3"><button disabled={busy} className="rounded-lg bg-brand px-4 py-2 text-white disabled:opacity-50">{busy ? 'Guardando…' : 'Dar de alta'}</button>
+        <span className="text-xs text-slate-500">Para doble disciplina o hermanas, termínalo en su ficha (se abre al guardar).</span></div>
+      {msg && <p className="rounded bg-red-50 p-2 text-red-700">{msg}</p>}
     </form>
   );
 }
