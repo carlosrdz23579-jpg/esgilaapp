@@ -15,11 +15,17 @@ const monthLabel = (ym: string) => `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(0,
 const addMonth = (ym: string, n: number) => { const d = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
 const quarterOf = (iso: string) => { const y = +iso.slice(0, 4), q = Math.floor((+iso.slice(5, 7) - 1) / 3);
   return { start: `${y}-${String(q * 3 + 1).padStart(2, '0')}-01`, end: new Date(Date.UTC(y, q * 3 + 3, 0)).toISOString().slice(0, 10), label: `${['1er', '2º', '3er', '4º'][q]} trimestre ${y}` }; };
+/** Periodo de la planeación general / conteo de apuntes según la sucursal. */
+const periodOf = (iso: string, mode: string) => {
+  if (mode !== 'mensual') return quarterOf(iso);
+  const ym = iso.slice(0, 7);
+  return { start: `${ym}-01`, end: new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).toISOString().slice(0, 10), label: `mes de ${monthLabel(ym)}` };
+};
 const deadlineOf = (ym: string, day = 25) => `${addMonth(ym, -1)}-${String(day).padStart(2, '0')}`;
 /** Ajustes de la sucursal (Configuración). */
 function useCompanyCfg(companyId: string) {
-  const [cfg, setCfg] = useState({ planning_deadline_day: 25, planning_max_uploads: 2 });
-  useEffect(() => { supabase.from('companies').select('planning_deadline_day,planning_max_uploads').eq('id', companyId).single()
+  const [cfg, setCfg] = useState({ planning_deadline_day: 25, planning_max_uploads: 2, planning_period: 'trimestral', planning_parts: 2 });
+  useEffect(() => { supabase.from('companies').select('planning_deadline_day,planning_max_uploads,planning_period,planning_parts').eq('id', companyId).single()
     .then(({ data }) => data && setCfg(data as typeof cfg)); }, [companyId]);
   return cfg;
 }
@@ -274,7 +280,11 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
   const [open, setOpen] = useState<PFile | null>(null);
   const [planMonth, setPlanMonth] = useState(addMonth(todayMx().slice(0, 7), 1));
   const [note, setNote] = useState(''); const [noteFiles, setNoteFiles] = useState<FileList | null>(null);
-  const [gq, setGq] = useState(quarterOf(todayMx()).start);
+  const [gq, setGq] = useState(todayMx());
+  const parts = ([1, 2] as const).slice(0, cfg.planning_parts);
+  const genOptions = cfg.planning_period === 'mensual'
+    ? [-1, 0, 1, 2].map(k => periodOf(`${addMonth(todayMx().slice(0, 7), k)}-01`, 'mensual'))
+    : [-1, 0, 1, 2].map(k => quarterOf(new Date(Date.parse(quarterOf(todayMx()).start) + k * 92 * 864e5).toISOString().slice(0, 10)));
   const canGeneral = can('planning', 'configure');
 
   const load = useCallback(async () => {
@@ -290,7 +300,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
   const daysLeft = Math.round((Date.parse(deadlineOf(planMonth, cfg.planning_deadline_day)) - Date.parse(todayMx())) / 864e5);
 
   async function addGeneral(f: File) {
-    const q = quarterOf(gq); setBusy(true); setMsg(null);
+    const q = periodOf(gq, cfg.planning_period); setBusy(true); setMsg(null);
     const u = await upload(companyId, 'general', f);
     if ('error' in u) { setBusy(false); return setMsg(u.error); }
     const { error } = await supabase.from('planning_files').insert({ company_id: companyId, kind: 'general', period_start: q.start, period_end: q.end,
@@ -302,7 +312,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
     const u = await upload(companyId, me.id, f);
     if ('error' in u) { setBusy(false); return setMsg(u.error); }
     const { error } = await supabase.from('planning_files').insert({ company_id: companyId, kind: 'mensual', employee_id: me.id, period_start: `${planMonth}-01`, part,
-      title: `Planeación ${monthLabel(planMonth)} · semanas ${part === 1 ? '1–2' : '3–4'}`, storage_path: u.path, file_name: f.name, mime: f.type, size_bytes: f.size });
+      title: `Planeación ${monthLabel(planMonth)}${cfg.planning_parts > 1 ? ` · semanas ${part === 1 ? '1–2' : '3–4'}` : ''}`, storage_path: u.path, file_name: f.name, mime: f.type, size_bytes: f.size });
     setBusy(false); if (error) setMsg(error.message); else load();
   }
   async function addNote() {
@@ -330,9 +340,8 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
       <section className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">Planeación general de la sucursal</h3>
           {canGeneral && <span className="ml-auto flex items-center gap-2 text-xs">
-            <select className={field} value={gq} onChange={e => setGq(e.target.value)}>
-              {[-1, 0, 1, 2].map(k => { const d = new Date(Date.parse(quarterOf(todayMx()).start) + k * 92 * 864e5).toISOString().slice(0, 10); const q = quarterOf(d);
-                return <option key={q.start} value={q.start}>{q.label}</option>; })}</select>
+            <select className={field} value={periodOf(gq, cfg.planning_period).start} onChange={e => setGq(e.target.value)}>
+              {genOptions.map(q => <option key={q.start} value={q.start}>{q.label}</option>)}</select>
             <label className={`${btn} cursor-pointer`}>Subir archivo<input type="file" hidden disabled={busy} onChange={e => e.target.files?.[0] && addGeneral(e.target.files[0])} /></label></span>}</div>
         {generals.length === 0 && <p className="text-sm text-slate-500">Aún no hay planeación general.</p>}
         {generals.map(g => <div key={g.id} className="flex items-center gap-2 text-sm">
@@ -342,7 +351,7 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
       </section>
 
       {me ? <>
-        <section className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
+        {parts.length > 0 && <section className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">Mi planeación mensual</h3>
             <span className="ml-auto flex items-center gap-1 text-sm">
               <button className="rounded border px-2" onClick={() => setPlanMonth(addMonth(planMonth, -1))}>‹</button>
@@ -350,17 +359,17 @@ function Plans({ companyId, me }: { companyId: string; me: Emp | null }) {
               <button className="rounded border px-2" onClick={() => setPlanMonth(addMonth(planMonth, 1))}>›</button></span></div>
           <p className={`text-xs ${daysLeft >= 0 && daysLeft <= 3 ? 'font-semibold text-amber-700' : 'text-slate-500'}`}>
             Fecha límite: {cfg.planning_deadline_day} de {MONTHS[+addMonth(planMonth, -1).slice(5, 7) - 1]}{daysLeft > 0 ? ` · faltan ${daysLeft} día(s)` : daysLeft === 0 ? ' · ¡es hoy!' : ' · ya pasó (se marca como envío tardío)'}. Cualquier tipo de archivo; hasta {cfg.planning_max_uploads} envío(s) por parte.</p>
-          <div className="grid gap-2 sm:grid-cols-2">{([1, 2] as const).map(part => {
+          <div className={`grid gap-2 ${parts.length > 1 ? 'sm:grid-cols-2' : ''}`}>{parts.map(part => {
             const sent = myMonthly.filter(f => f.part === part);
             return (
               <div key={part} className="rounded-lg border p-3 text-sm">
-                <p className="font-medium">Semanas {part === 1 ? '1–2' : '3–4'}</p>
+                <p className="font-medium">{parts.length > 1 ? `Semanas ${part === 1 ? '1–2' : '3–4'}` : 'Planeación del mes'}</p>
                 {sent.map(f => <p key={f.id} className="text-xs"><button className="text-brand underline" onClick={() => f.storage_path && openFile(f.storage_path)}>{f.file_name}</button>
                   {' '}· {f.created_at.slice(0, 10)} {f.late ? <span className="font-semibold text-red-700">envío tardío</span> : <span className="text-green-700">a tiempo</span>}{f.reviewed_at && ' · revisada ✓'}</p>)}
                 {sent.length < cfg.planning_max_uploads && <label className="mt-1 inline-block cursor-pointer text-xs text-brand">{sent.length ? '+ Subir versión actualizada' : '+ Subir'}<input type="file" hidden disabled={busy} onChange={e => e.target.files?.[0] && addMonthly(part, e.target.files[0])} /></label>}
               </div>);
           })}</div>
-        </section>
+        </section>}
 
         <section className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
           <h3 className="font-semibold">Mis apuntes</h3>
@@ -393,7 +402,7 @@ function ReviewPlans({ companyId }: { companyId: string }) {
   const [files, setFiles] = useState<PFile[]>([]);
   const [month, setMonth] = usePersisted('coaches:revisionMes', addMonth(todayMx().slice(0, 7), 1));
   const [open, setOpen] = useState<Emp | null>(null); const [msg, setMsg] = useState<string | null>(null);
-  const q = quarterOf(`${month}-01`);
+  const q = periodOf(`${month}-01`, cfg.planning_period); const parts = [1, 2].slice(0, cfg.planning_parts);
   const load = useCallback(async () => {
     const { data, error } = await supabase.from('planning_status').select('*').eq('company_id', companyId).neq('kind', 'general').order('created_at', { ascending: false });
     if (error) setMsg(error.message); else setFiles((data as PFile[]) ?? []);
@@ -416,16 +425,16 @@ function ReviewPlans({ companyId }: { companyId: string }) {
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, -1))}>‹</button>
         <b className="w-36 text-center capitalize">{monthLabel(month)}</b>
         <button className="rounded border px-2" onClick={() => setMonth(addMonth(month, 1))}>›</button>
-        <span className="ml-3 text-xs text-slate-500">Límite: {deadlineOf(month, cfg.planning_deadline_day)} · apuntes contados en el {q.label}</span></div>
+        <span className="ml-3 text-xs text-slate-500">{parts.length > 0 && <>Límite: {deadlineOf(month, cfg.planning_deadline_day)} · </>}apuntes contados en el {q.label}</span></div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-left text-sm">
-          <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Coach</th><th>Semanas 1–2</th><th>Semanas 3–4</th><th>Apuntes del trimestre</th><th>Último apunte</th></tr></thead>
+          <thead className="bg-slate-100 text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Coach</th>{parts.map(p => <th key={p}>{parts.length > 1 ? `Semanas ${p === 1 ? '1–2' : '3–4'}` : 'Planeación del mes'}</th>)}<th>Apuntes del {cfg.planning_period === 'mensual' ? 'mes' : 'trimestre'}</th><th>Último apunte</th></tr></thead>
           <tbody>{coaches.map(c => {
             const notes = files.filter(x => x.employee_id === c.id && x.kind === 'apunte' && x.period_start >= q.start && x.period_start <= q.end);
             return (
               <tr key={c.id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => setOpen(c)}>
-                <td className="px-3 py-2 font-medium text-brand">{c.full_name}</td><td>{status(c.id, 1)}</td><td>{status(c.id, 2)}</td>
+                <td className="px-3 py-2 font-medium text-brand">{c.full_name}</td>{parts.map(p => <td key={p}>{status(c.id, p)}</td>)}
                 <td className={notes.length ? '' : 'text-amber-700'}>{notes.length}</td><td className="text-xs">{notes[0]?.created_at.slice(0, 10) ?? '—'}</td>
               </tr>);
           })}</tbody>
@@ -434,7 +443,7 @@ function ReviewPlans({ companyId }: { companyId: string }) {
       {open && <Modal wide title={open.full_name} onClose={() => setOpen(null)}>
         <div className="divide-y rounded-lg border text-sm">{files.filter(f => f.employee_id === open.id).map(f => (
           <div key={f.id} className={`flex flex-wrap items-center gap-2 px-3 py-2 ${f.hidden_at ? 'text-slate-400' : ''}`}>
-            <span className="text-xs">{f.kind === 'mensual' ? `📅 ${monthLabel(f.period_start.slice(0, 7))} · parte ${f.part}` : '📝 Apunte'}</span>
+            <span className="text-xs">{f.kind === 'mensual' ? `📅 ${monthLabel(f.period_start.slice(0, 7))}${cfg.planning_parts > 1 ? ` · parte ${f.part}` : ''}` : '📝 Apunte'}</span>
             <span className="truncate">{f.title}</span>
             {f.storage_path && <button className="text-xs text-brand underline" onClick={() => openFile(f.storage_path!)}>abrir</button>}
             {f.kind === 'mensual' && <span className={`text-xs ${f.late ? 'text-red-700' : 'text-green-700'}`}>{f.late ? 'envío tardío' : 'a tiempo'}</span>}

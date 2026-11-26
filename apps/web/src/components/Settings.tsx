@@ -9,8 +9,9 @@ interface Slot { start: string; end: string; teachers: number }
 interface Cfg {
   warmup_schedule: Record<string, Slot[]>; late_tolerance_min: number; late_deduction_bps: number;
   warmup_deduction_min: number; planning_deadline_day: number; planning_max_uploads: number;
+  planning_period: string; planning_parts: number;
 }
-const COLS = 'warmup_schedule,late_tolerance_min,late_deduction_bps,warmup_deduction_min,planning_deadline_day,planning_max_uploads';
+const COLS = 'warmup_schedule,late_tolerance_min,late_deduction_bps,warmup_deduction_min,planning_deadline_day,planning_max_uploads,planning_period,planning_parts';
 
 /** Configuración por sucursal: todo lo que antes estaba fijo. */
 export default function Settings() {
@@ -111,6 +112,12 @@ export default function Settings() {
 
         <section className="grid gap-3 rounded-xl bg-white p-4 shadow-sm sm:grid-cols-3">
           <h3 className="font-semibold sm:col-span-3">📚 Planeaciones</h3>
+          <label className="text-sm">Planeación general y conteo de apuntes
+            <select className={`${field} block w-full`} value={cfg.planning_period} onChange={e => setCfg({ ...cfg, planning_period: e.target.value })}>
+              <option value="trimestral">Por trimestre</option><option value="mensual">Por mes</option></select></label>
+          <label className="text-sm">Planeación mensual de cada maestro
+            <select className={`${field} block w-full`} value={cfg.planning_parts} onChange={e => setCfg({ ...cfg, planning_parts: +e.target.value })}>
+              <option value={0}>No entregan (sólo apuntes)</option><option value={1}>En una parte</option><option value={2}>En dos partes (semanas 1–2 y 3–4)</option></select></label>
           <label className="text-sm">Fecha límite de la planeación mensual
             <select className={`${field} block w-full`} value={cfg.planning_deadline_day} onChange={e => setCfg({ ...cfg, planning_deadline_day: +e.target.value })}>
               {Array.from({ length: 28 }, (_, i) => i + 1).map(n => <option key={n} value={n}>Día {n} del mes anterior</option>)}</select></label>
