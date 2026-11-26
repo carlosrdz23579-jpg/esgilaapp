@@ -1,3 +1,4 @@
+declare const __BUILD__: string;
 import { useState } from 'react';
 import { usePersisted } from '../lib/usePersisted';
 import { useAuth } from '../lib/auth';
@@ -46,7 +47,7 @@ export default function Shell() {
   return (
     <div className="flex min-h-screen">
       <aside className={`fixed inset-y-0 left-0 z-20 w-64 transform bg-white shadow transition overflow-y-auto md:sticky md:top-0 md:h-screen md:shrink-0 md:translate-x-0 ${open ? '' : '-translate-x-full'}`}>
-        <div className="p-4 text-lg font-semibold text-brand">Administración</div>
+        <div className="p-4 text-lg font-semibold text-brand">Administración<div className="text-[10px] font-normal text-slate-400">versión {__BUILD__}</div></div>
         <nav className="space-y-1 px-2">
           {mods.map(m => (
             <button key={m.key} onClick={() => { setActive(m.key); setOpen(false); }}
