@@ -10,6 +10,7 @@ const btn = 'rounded-lg bg-brand px-3 py-2 text-sm text-white disabled:opacity-5
 const todayMx = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
 export const thisMonth = () => todayMx().slice(0, 7);
 export const toCents = (s: string) => Math.round(parseFloat(s.replace(/[$,\s]/g, '') || '0') * 100);
+const money = (c: number) => formatMXN(c);
 const CATS: Record<string, string> = { indumentaria: 'Indumentaria', accesorio: 'Accesorio', tiendita: 'Tiendita', evento: 'Evento', servicio: 'Servicio', otro: 'Otro' };
 
 export interface DiscRule { company_id: string; discipline: string; is_combo: boolean; min_hours: number; max_hours: number; max_total_hours: number; min_total_hours: number | null }
@@ -37,7 +38,7 @@ export default function Billing() {
         <select className="ml-auto rounded border px-2 py-1 text-sm" value={co} onChange={e => setCo(e.target.value)}>
           {companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select>
       </div>
-      <p className="text-xs text-slate-500">Los planes se asignan desde la ficha de cada alumna (Alumnas → clic en su nombre). Los cobros, saldos y caja vienen en la siguiente etapa.</p>
+      <p className="text-xs text-slate-500">Los planes se asignan desde la ficha de cada alumna (Alumnas → clic en su nombre). Los cobros y la caja están en el menú Caja.</p>
       {co && tab === 'tabla' && <PriceTable co={co} canCfg={canCfg} />}
       {co && tab === 'planes' && <Plans co={co} canCfg={canCfg} />}
       {co && tab === 'grupos' && <Groups co={co} canCfg={canCfg} />}
@@ -325,45 +326,80 @@ function Groups({ co, canCfg }: { co: string; canCfg: boolean }) {
 }
 
 // ---------------------------------------------------------------- Productos
-interface Prod { id: string; category: string; name: string; price_cents: number; is_active: boolean }
+interface Prod { id: string; category: string; name: string; price_cents: number; cost_cents: number | null; is_active: boolean; deleted_at: string | null }
 function Products({ co, canCfg }: { co: string; canCfg: boolean }) {
-  const [rows, setRows] = useState<Prod[]>([]); const [msg, setMsg] = useState<string | null>(null);
-  const [form, setForm] = useState({ category: 'indumentaria', name: '', price: '' });
+  const [rows, setRows] = useState<Prod[]>([]); const [msg, setMsg] = useState<string | null>(null); const [showDeleted, setShowDeleted] = useState(false);
+  const [form, setForm] = useState({ category: 'indumentaria', name: '', price: '', cost: '' });
+  const [hist, setHist] = useState<{ p: Prod; rows: { at: string; who: string | null; action: string; old_row: Record<string, unknown> | null; new_row: Record<string, unknown> | null }[] } | null>(null);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('products').select('id,category,name,price_cents,is_active').eq('company_id', co).order('category').order('name');
+    const { data, error } = await supabase.from('products').select('id,category,name,price_cents,cost_cents,is_active,deleted_at').eq('company_id', co).order('category').order('name');
     if (error) setMsg(error.message); setRows((data as Prod[]) ?? []);
   }, [co]);
   useEffect(() => { load(); }, [load]);
   async function add(ev: React.FormEvent) {
     ev.preventDefault(); setMsg(null);
-    const { error } = await supabase.from('products').insert({ company_id: co, category: form.category, name: form.name.trim(), price_cents: toCents(form.price) });
-    if (error) return setMsg(error.message.includes('unique') ? 'Ya existe un producto con ese nombre.' : error.message);
-    setForm({ ...form, name: '', price: '' }); load();
+    const { error } = await supabase.from('products').insert({ company_id: co, category: form.category, name: form.name.trim(), price_cents: toCents(form.price),
+      cost_cents: form.cost ? toCents(form.cost) : null });
+    if (error) return setMsg(error.message.includes('products_name_live') || error.message.includes('unique') ? 'Ya existe un producto con ese nombre.' : error.message);
+    setForm({ ...form, name: '', price: '', cost: '' }); load();
   }
-  async function patch(p: Prod, v: Partial<Prod>) { const { error } = await supabase.from('products').update(v).eq('id', p.id); if (error) setMsg(error.message); else load(); }
+  async function patch(p: Prod, v: Partial<Prod>) {
+    setMsg(null); const { error } = await supabase.from('products').update(v).eq('id', p.id);
+    if (error) setMsg(error.message.includes('products_name_live') ? 'Ya existe un producto con ese nombre.' : error.message); else load();
+  }
+  async function del(p: Prod) { if (confirm(`¿Eliminar "${p.name}"? Las ventas ya hechas no cambian y queda en el historial.`)) patch(p, { deleted_at: new Date().toISOString() }); }
+  async function showHist(p: Prod) { const r = await supabase.rpc('product_history', { p_product: p.id }); setHist({ p, rows: (r.data as never[]) ?? [] }); }
+  const list = rows.filter(p => showDeleted ? !!p.deleted_at : !p.deleted_at);
+  const desc = (o: Record<string, unknown> | null, n: Record<string, unknown> | null) => {
+    if (!o) return `creado: ${n?.name} · ${money(Number(n?.price_cents ?? 0))}`;
+    const parts: string[] = [];
+    if (o.name !== n?.name) parts.push(`nombre "${o.name}" → "${n?.name}"`);
+    if (o.price_cents !== n?.price_cents) parts.push(`precio ${money(Number(o.price_cents))} → ${money(Number(n?.price_cents))}`);
+    if (o.cost_cents !== n?.cost_cents) parts.push(`costo ${o.cost_cents != null ? money(Number(o.cost_cents)) : '—'} → ${n?.cost_cents != null ? money(Number(n?.cost_cents)) : '—'}`);
+    if (o.category !== n?.category) parts.push(`categoría ${CATS[String(o.category)]} → ${CATS[String(n?.category)]}`);
+    if (!o.deleted_at && n?.deleted_at) parts.push('eliminado');
+    if (o.deleted_at && !n?.deleted_at) parts.push('restaurado');
+    if (o.is_active !== n?.is_active && !parts.length) parts.push(n?.is_active ? 'activado' : 'desactivado');
+    return parts.join(' · ') || 'sin cambios visibles';
+  };
   return (
     <div className="space-y-3">
+      <div className="flex items-center gap-3 text-sm"><label className="flex items-center gap-1"><input type="checkbox" checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} />Ver eliminados</label>
+        {!canCfg && <span className="text-xs text-slate-500">Para agregar, editar o eliminar productos se necesita el permiso Cobranza → Configurar.</span>}</div>
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Producto</th><th className="px-3 py-2">Categoría</th><th className="px-3 py-2 text-right">Precio</th><th className="px-3 py-2">Activo</th></tr></thead>
-          <tbody>{rows.map(p => (
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Producto</th><th className="px-3 py-2">Categoría</th>
+            <th className="px-3 py-2 text-right">Precio</th><th className="px-3 py-2 text-right">Costo</th><th className="px-3 py-2">Activo</th><th className="px-3 py-2"></th></tr></thead>
+          <tbody>{list.map(p => { const edit = canCfg && !p.deleted_at; return (
             <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
-              <td className="px-3 py-2 font-medium">{p.name}</td><td className="px-3 py-2">{CATS[p.category]}</td>
-              <td className="px-3 py-2 text-right">{canCfg ? <input className="w-24 rounded border px-2 py-1 text-right" defaultValue={(p.price_cents / 100).toFixed(2)}
+              <td className="px-3 py-1.5">{edit ? <input key={p.name} className="w-64 rounded border px-2 py-1 font-medium" defaultValue={p.name} onBlur={e => e.target.value.trim() && e.target.value.trim() !== p.name && patch(p, { name: e.target.value.trim() })} /> : <span className="font-medium">{p.name}</span>}</td>
+              <td className="px-3 py-1.5">{edit ? <select className="rounded border px-2 py-1" value={p.category} onChange={e => patch(p, { category: e.target.value })}>
+                {Object.entries(CATS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select> : CATS[p.category]}</td>
+              <td className="px-3 py-1.5 text-right">{edit ? <input key={p.price_cents} className="w-24 rounded border px-2 py-1 text-right" defaultValue={(p.price_cents / 100).toFixed(2)}
                 onBlur={e => toCents(e.target.value) !== p.price_cents && patch(p, { price_cents: toCents(e.target.value) })} /> : formatMXN(p.price_cents)}</td>
-              <td className="px-3 py-2"><input type="checkbox" disabled={!canCfg} checked={p.is_active} onChange={e => patch(p, { is_active: e.target.checked })} /></td>
-            </tr>))}
-            {!rows.length && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">Sin productos.</td></tr>}</tbody>
+              <td className="px-3 py-1.5 text-right">{edit ? <input key={p.cost_cents ?? 'x'} className="w-24 rounded border px-2 py-1 text-right" placeholder="—" defaultValue={p.cost_cents != null ? (p.cost_cents / 100).toFixed(2) : ''}
+                onBlur={e => (e.target.value ? toCents(e.target.value) : null) !== p.cost_cents && patch(p, { cost_cents: e.target.value ? toCents(e.target.value) : null })} /> : p.cost_cents != null ? formatMXN(p.cost_cents) : '—'}</td>
+              <td className="px-3 py-1.5"><input type="checkbox" disabled={!edit} checked={p.is_active} onChange={e => patch(p, { is_active: e.target.checked })} /></td>
+              <td className="space-x-3 whitespace-nowrap px-3 py-1.5 text-right text-xs"><button className="text-brand" onClick={() => showHist(p)}>Historial</button>
+                {canCfg && (p.deleted_at ? <button className="text-green-700" onClick={() => patch(p, { deleted_at: null, is_active: true })}>Restaurar</button>
+                  : <button className="text-red-600" onClick={() => del(p)}>Eliminar</button>)}</td>
+            </tr>); })}
+            {!list.length && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">{showDeleted ? 'No hay productos eliminados.' : 'Sin productos.'}</td></tr>}</tbody>
         </table>
       </div>
+      {hist && <div className="space-y-1 rounded-xl bg-white p-4 text-xs shadow-sm"><div className="flex"><b className="text-sm">Historial · {hist.p.name}</b><button className="ml-auto text-slate-500" onClick={() => setHist(null)}>Cerrar</button></div>
+        {hist.rows.map((h, i) => <p key={i}>{new Date(h.at).toLocaleString('es-MX')} · {h.who ?? '—'} · {desc(h.old_row, h.new_row)}</p>)}
+        {!hist.rows.length && <p className="text-slate-400">Sin cambios registrados.</p>}</div>}
       {canCfg && <form onSubmit={add} className="flex flex-wrap items-end gap-2 rounded-xl bg-white p-4 shadow-sm">
         <label className="text-xs">Categoría<select className={`${field} block`} value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
           {Object.entries(CATS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
         <label className="text-xs">Producto<input required className={`${field} block w-60`} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Leotardo A Brillo Talla 10" /></label>
         <label className="text-xs">Precio<input required className={`${field} block w-28`} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label>
+        <label className="text-xs">Costo (opcional)<input className={`${field} block w-28`} value={form.cost} onChange={e => setForm({ ...form, cost: e.target.value })} /></label>
         <button className={btn}>Agregar</button>
       </form>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+      <p className="text-xs text-slate-500">Cambiar o eliminar un producto no cambia las ventas ya hechas. El costo sirve para sacar la utilidad por producto en los reportes.</p>
     </div>
   );
 }

@@ -17,9 +17,12 @@ interface Method { id: string; name: string; kind: string }
 interface Stu { id: string; full_name: string; family_id: string | null; photo_path: string | null; kind: string; is_active: boolean }
 interface Prod { id: string; name: string; category: string; price_cents: number }
 interface Sale { id: string; folio: number; student_id: string | null; customer_name: string | null; sold_at: string; total_cents: number; seller_name: string | null;
-  created_by: string; session_id: string | null; cancelled_at: string | null; cancel_reason: string | null; note: string | null }
+  created_by: string; session_id: string | null;
+  cancelled_at: string | null; cancel_reason: string | null; note: string | null; cancel_requested_at?: string | null; cancel_request_reason?: string | null;
+  cancel_requested_name?: string | null; cancelled_name?: string | null; sold_on?: string }
+interface Bal { sale_id: string; student_id: string | null; folio: number; sold_on: string; total_cents: number; paid_cents: number; balance_cents: number }
 interface Line { sale_id: string; kind: string; description: string; amount_cents: number; base_cents: number; discount_cents: number; surcharge_cents: number }
-interface Pay { sale_id: string; payment_method_id: string; amount_cents: number; reference: string | null }
+interface Pay { sale_id: string; payment_method_id: string; amount_cents: number; reference: string | null; paid_on?: string; paid_at?: string; session_id?: string | null; is_installment?: boolean; author_name?: string | null }
 
 export default function Caja() {
   const { companies, companyId, can, user } = useAuth();
@@ -79,14 +82,15 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
   const [extra, setExtra] = useState({ description: '', amount: '' }); const [others, setOthers] = useState<{ description: string; amount: number }[]>([]);
   const [pays, setPays] = useState<{ method: string; amount: string; reference: string }[]>([]);
   const [note, setNote] = useState(''); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [loading, setLoading] = useState(false);
-  const [receipt, setReceipt] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<string | null>(null); const [leaveDebt, setLeaveDebt] = useState(false);
+  const [bals, setBals] = useState<Bal[]>([]);
 
   useEffect(() => {
     Promise.all([supabase.from('students').select('id,full_name,family_id,photo_path,kind,is_active').eq('company_id', co).eq('is_active', true).order('full_name').limit(3000),
       supabase.from('products').select('id,name,category,price_cents').eq('company_id', co).eq('is_active', true).order('category').order('name')])
       .then(([s, p]) => { setStudents((s.data as Stu[]) ?? []); setProducts((p.data as Prod[]) ?? []); });
   }, [co]);
-  const reset = () => { setWho(null); setCounter(false); setCustomer(''); setOwed([]); setSel(new Set()); setCart([]); setOthers([]); setPays([]); setNote(''); setFamily([]); setCredit(0); setNext(false); };
+  const reset = () => { setLeaveDebt(false); setBals([]); setWho(null); setCounter(false); setCustomer(''); setOwed([]); setSel(new Set()); setCart([]); setOthers([]); setPays([]); setNote(''); setFamily([]); setCredit(0); setNext(false); };
 
   const loadOwed = useCallback(async (st: Stu, includeNext: boolean) => {
     setLoading(true); setMsg(null);
@@ -96,6 +100,8 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
     if (r.error) setMsg(r.error);
     setOwed(r.items); setSel(new Set(r.items.filter(i => !i.future).map(i => i.key)));
     const c = await supabase.rpc('student_credit', { p_student: st.id }); setCredit(Number(c.data ?? 0));
+    const b = await supabase.from('sale_balances').select('*').in('student_id', fam.map(x => x.id)).gt('balance_cents', 0).order('sold_on');
+    setBals((b.data as Bal[]) ?? []);
     setLoading(false);
   }, [co]);
   useEffect(() => { if (who) loadOwed(who, next); }, [who, next, loadOwed]);
@@ -115,7 +121,7 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
   async function charge() {
     setMsg(null);
     if (!lines.length) return setMsg('Agrega algo que cobrar.');
-    if (over < 0) return setMsg(`Faltan ${money(-over)} por pagar.`);
+    if (over < 0 && !(who && leaveDebt)) return setMsg(`Faltan ${money(-over)} por pagar. Marca "Dejar adeudo" si va a pagar después.`);
     if (over > 0 && !who) return setMsg('En venta de mostrador no puede quedar saldo a favor: ajusta lo pagado.');
     setBusy(true);
     const allLines = over > 0 ? [...lines, { kind: 'saldo_favor', student_id: who!.id, description: 'Saldo a favor', base_cents: over, discount_cents: 0, surcharge_cents: 0, amount_cents: over }] : lines;
@@ -157,6 +163,8 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
               <b>{money(i.amount)}</b></label>)}
           </div>}
 
+          {bals.length > 0 && <div className="space-y-1"><h4 className="text-sm font-semibold">Recibos con saldo pendiente</h4>
+            {bals.map(b => <Installment key={b.sale_id} b={b} methods={methods} credit={credit} who={family.find(f => f.id === b.student_id)?.full_name ?? ''} onDone={() => who && loadOwed(who, next)} onOpen={setReceipt} />)}</div>}
           <div className="space-y-1">
             <h4 className="text-sm font-semibold">Productos y otros</h4>
             <select className={`${field} w-full`} value="" onChange={e => { const p = products.find(x => x.id === e.target.value); if (p) setCart(c => c.some(x => x.p.id === p.id) ? c.map(x => x.p.id === p.id ? { ...x, qty: x.qty + 1 } : x) : [...c, { p, qty: 1 }]); }}>
@@ -186,13 +194,39 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
         </div>)}
         <div className="flex gap-3 text-xs"><button className="text-brand" onClick={() => setPays([...pays, { method: methods[0]?.id ?? '', amount: '', reference: '' }])}>+ Otra forma de pago</button>
           <button className="text-brand" onClick={() => setPays(pays.map((x, j) => j === 0 ? { ...x, amount: ((total - pays.slice(1).reduce((n, y) => n + toCents(y.amount), 0)) / 100).toFixed(2) } : x))}>Poner el total</button></div>
-        {paid > 0 && <p className={`text-sm ${over < 0 ? 'text-red-700' : over > 0 ? 'text-green-700' : 'text-slate-600'}`}>
+        {(paid > 0 || leaveDebt) && <p className={`text-sm ${over < 0 ? 'text-red-700' : over > 0 ? 'text-green-700' : 'text-slate-600'}`}>
           {over < 0 ? `Faltan ${money(-over)}` : over > 0 ? (who ? `Quedan ${money(over)} a favor de ${who.full_name}` : `Sobran ${money(over)}: da cambio y ajusta lo pagado`) : 'Pago exacto'}</p>}
+        {over < 0 && who && <label className="flex items-start gap-2 rounded-lg bg-amber-50 p-2 text-sm"><input type="checkbox" className="mt-1" checked={leaveDebt} onChange={e => setLeaveDebt(e.target.checked)} />
+          <span>Dejar adeudo de <b>{money(-over)}</b>: queda en su historial y lo puede pagar después en abonos.</span></label>}
         <input className={`${field} w-full`} placeholder="Nota (opcional)" value={note} onChange={e => setNote(e.target.value)} />
-        <button disabled={busy || !lines.length || over < 0} className={`${btn} w-full py-3 text-base`} onClick={charge}>{busy ? 'Cobrando…' : `Cobrar ${money(total)}`}</button>
+        <button disabled={busy || !lines.length || (over < 0 && !(who && leaveDebt))} className={`${btn} w-full py-3 text-base`} onClick={charge}>{busy ? 'Cobrando…' : over < 0 && leaveDebt ? `Cobrar ${money(paid)} y dejar ${money(-over)} de adeudo` : `Cobrar ${money(total)}`}</button>
         {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
         <p className="text-xs text-slate-500">Si paga en efectivo y da de más, pon sólo lo que se queda (el total) y entrega el cambio.</p>
       </div>}
+    </div>
+  );
+}
+
+function Installment({ b, methods, credit, who, onDone, onOpen }: { b: Bal; methods: Method[]; credit: number; who: string; onDone: () => void; onOpen: (id: string) => void }) {
+  const [open, setOpen] = useState(false); const [m, setM] = useState(methods.find(x => x.kind === 'efectivo')?.id ?? methods[0]?.id ?? '');
+  const [amount, setAmount] = useState(''); const [ref, setRef] = useState(''); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  async function pay() {
+    setBusy(true); setMsg(null);
+    const { error } = await supabase.rpc('add_payment', { p_sale: b.sale_id, p_method: m, p_amount: toCents(amount), p_reference: ref });
+    setBusy(false); if (error) return setMsg(error.message); setOpen(false); setAmount(''); onDone();
+  }
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2"><button className="text-brand" onClick={() => onOpen(b.sale_id)}>F {b.folio}</button>
+        <span className="text-slate-600">{b.sold_on} · {who} · total {money(b.total_cents)} · pagado {money(b.paid_cents)}</span>
+        <b className="ml-auto text-red-700">debe {money(b.balance_cents)}</b>
+        {!open && <button className="rounded-lg bg-brand px-3 py-1 text-xs text-white" onClick={() => { setOpen(true); setAmount((b.balance_cents / 100).toFixed(2)); }}>Abonar</button>}</div>
+      {open && <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select className="rounded border px-2 py-1" value={m} onChange={e => setM(e.target.value)}>{methods.filter(x => x.name !== 'Saldo a favor' || credit > 0).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+        <input className="w-28 rounded border px-2 py-1" value={amount} onChange={e => setAmount(e.target.value)} />
+        <input className="w-40 rounded border px-2 py-1" placeholder="Referencia" value={ref} onChange={e => setRef(e.target.value)} />
+        <button disabled={busy} className="rounded-lg bg-green-600 px-3 py-1 text-white" onClick={pay}>Registrar abono</button><button className="text-slate-500" onClick={() => setOpen(false)}>Cancelar</button></div>}
+      {msg && <p className="text-red-700">{msg}</p>}
     </div>
   );
 }
@@ -218,7 +252,7 @@ function Receipt({ saleId, onNew }: { saleId: string; onNew: () => void }) {
   useEffect(() => {
     (async () => {
       const r = await supabase.from('sales').select('*').eq('id', saleId).single(); const sale = r.data as Sale & { company_id: string }; setS(sale); setCo(sale.company_id);
-      const [l, p, m] = await Promise.all([supabase.from('sale_lines').select('*').eq('sale_id', saleId), supabase.from('sale_payments').select('*').eq('sale_id', saleId),
+      const [l, p, m] = await Promise.all([supabase.from('sale_lines').select('*').eq('sale_id', saleId), supabase.from('sale_payments').select('*').eq('sale_id', saleId).order('paid_at'),
         supabase.from('payment_methods').select('id,name')]);
       setLines((l.data as Line[]) ?? []); setPays(((p.data as Pay[]) ?? []).map(x => ({ ...x, name: (m.data ?? []).find(y => y.id === x.payment_method_id)?.name ?? '' })));
       if (sale.student_id) { const st = await supabase.from('students').select('full_name').eq('id', sale.student_id).single(); setStudent(st.data?.full_name ?? ''); }
@@ -233,7 +267,10 @@ function Receipt({ saleId, onNew }: { saleId: string; onNew: () => void }) {
         {(l.discount_cents > 0 || l.surcharge_cents > 0) && <span className="block text-xs text-slate-500">{money(l.base_cents)}{l.discount_cents ? ` − ${money(l.discount_cents)}` : ''}{l.surcharge_cents ? ` + recargo ${money(l.surcharge_cents)}` : ''}</span>}</td>
         <td className="py-1 text-right">{money(l.amount_cents)}</td></tr>)}
         <tr className="border-t font-bold"><td className="py-1">Total</td><td className="py-1 text-right">{money(s.total_cents)}</td></tr>
-        {pays.map((p, i) => <tr key={i} className="text-xs text-slate-600"><td>{p.name}{p.reference ? ` · ${p.reference}` : ''}</td><td className="text-right">{money(p.amount_cents)}</td></tr>)}</tbody></table>
+        {pays.map((p, i) => <tr key={i} className="text-xs text-slate-600"><td>{p.is_installment ? `Abono ${p.paid_on} · ` : ''}{p.name}{p.reference ? ` · ${p.reference}` : ''}</td><td className="text-right">{money(p.amount_cents)}</td></tr>)}
+        {pays.reduce((n, p) => n + Number(p.amount_cents), 0) < s.total_cents && <tr className="font-semibold text-red-700"><td className="pt-1">Saldo pendiente</td>
+          <td className="pt-1 text-right">{money(s.total_cents - pays.reduce((n, p) => n + Number(p.amount_cents), 0))}</td></tr>}</tbody></table>
+      {s.cancelled_at && <p className="rounded bg-red-50 p-2 text-center text-xs text-red-700">CANCELADO · {s.cancel_reason}{s.cancelled_name ? ` · autorizó ${s.cancelled_name}` : ''}</p>}
       <p className="text-center text-xs text-slate-500">Atendió: {s.seller_name}</p>
       <div className="flex justify-center gap-2 print:hidden"><button className="rounded-lg border px-3 py-2" onClick={() => window.print()}>Imprimir</button><button className={btn} onClick={onNew}>Nuevo cobro</button></div>
     </div>
@@ -247,9 +284,14 @@ function Today({ co, methods }: { co: string; methods: Method[] }) {
   const [sessions, setSessions] = useState<Session[]>([]); const [names, setNames] = useState<Record<string, string>>({}); const [msg, setMsg] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const load = useCallback(async () => {
-    const [s, ss] = await Promise.all([supabase.from('sales').select('*').eq('company_id', co).eq('sold_on', date).order('folio', { ascending: false }),
-      supabase.from('cash_sessions').select('*').eq('company_id', co).eq('opened_on', date).order('opened_at')]);
-    const list = (s.data as Sale[]) ?? []; setSales(list); setSessions((ss.data as Session[]) ?? []);
+    const [s, ss, pt] = await Promise.all([supabase.from('sales').select('*').eq('company_id', co).eq('sold_on', date).order('folio', { ascending: false }),
+      supabase.from('cash_sessions').select('*').eq('company_id', co).eq('opened_on', date).order('opened_at'),
+      supabase.from('sale_payments').select('sale_id, sales!inner(company_id)').eq('paid_on', date).eq('sales.company_id', co)]);
+    const todays = (pt.data ?? []) as { sale_id: string }[];
+    // recibos de otros días que recibieron abono este día
+    const extraIds = [...new Set(todays.map(p => p.sale_id))].filter(id => !((s.data as Sale[]) ?? []).some(x => x.id === id));
+    const older = extraIds.length ? ((await supabase.from('sales').select('*').in('id', extraIds)).data as Sale[]) ?? [] : [];
+    const list = [...((s.data as Sale[]) ?? []), ...older]; setSales(list); setSessions((ss.data as Session[]) ?? []);
     const ids = list.map(x => x.id);
     const [l, p] = ids.length ? await Promise.all([supabase.from('sale_lines').select('*').in('sale_id', ids), supabase.from('sale_payments').select('*').in('sale_id', ids)]) : [{ data: [] }, { data: [] }];
     setLines((l.data as Line[]) ?? []); setPays((p.data as Pay[]) ?? []);
@@ -257,22 +299,41 @@ function Today({ co, methods }: { co: string; methods: Method[] }) {
     if (st.length) { const r = await supabase.from('students').select('id,full_name').in('id', st); setNames(Object.fromEntries((r.data ?? []).map(x => [x.id, x.full_name]))); }
   }, [co, date]);
   useEffect(() => { load(); }, [load]);
+  const authorizer = can('cashbox', 'configure');
   async function cancel(s: Sale) {
-    const reason = prompt(`Motivo para cancelar el recibo F ${s.folio}:`); if (!reason) return;
-    const { error } = await supabase.rpc('cancel_sale', { p_sale: s.id, p_reason: reason }); if (error) setMsg(error.message); else load();
+    if (authorizer) {
+      let reason: string | null = s.cancel_request_reason ?? null;
+      if (s.cancel_requested_at) { if (!confirm(`¿Autorizar la cancelación del recibo F ${s.folio}? Motivo: ${s.cancel_request_reason}`)) return; }
+      else { reason = prompt(`Motivo para cancelar el recibo F ${s.folio}:`); if (!reason) return; }
+      const { error } = await supabase.rpc('cancel_sale', { p_sale: s.id, p_reason: reason }); if (error) setMsg(error.message); else load();
+    } else {
+      const reason = prompt(`¿Por qué hay que cancelar el recibo F ${s.folio}? (lo autoriza dirección)`); if (!reason) return;
+      const { error } = await supabase.rpc('request_cancel_sale', { p_sale: s.id, p_reason: reason }); if (error) setMsg(error.message); else load();
+    }
   }
+  async function reject(s: Sale) { const { error } = await supabase.rpc('reject_cancel_sale', { p_sale: s.id }); if (error) setMsg(error.message); else load(); }
   const valid = sales.filter(s => !s.cancelled_at); const vIds = new Set(valid.map(s => s.id));
-  const byMethod = methods.map(m => ({ m, total: pays.filter(p => vIds.has(p.sale_id) && p.payment_method_id === m.id).reduce((n, p) => n + Number(p.amount_cents), 0) })).filter(x => x.total);
-  const byKind = ['mensualidad', 'cambio_plan', 'anualidad', 'producto', 'otro', 'saldo_favor'].map(k => ({ k, total: lines.filter(l => vIds.has(l.sale_id) && l.kind === k).reduce((n, l) => n + Number(l.amount_cents), 0) })).filter(x => x.total);
+  const dayPays = pays.filter(p => vIds.has(p.sale_id) && (p.paid_on ?? date) === date);   // flujo de caja: lo que entró este día
+  const byMethod = methods.map(m => ({ m, total: dayPays.filter(p => p.payment_method_id === m.id).reduce((n, p) => n + Number(p.amount_cents), 0) })).filter(x => x.total);
+  const abonos = dayPays.filter(p => p.is_installment).reduce((n, p) => n + Number(p.amount_cents), 0);
+  const soldToday = valid.filter(s => (s.sold_on ?? date) === date);
+  const pendingToday = soldToday.reduce((n, s) => n + Number(s.total_cents) - pays.filter(p => p.sale_id === s.id).reduce((m, p) => m + Number(p.amount_cents), 0), 0);
+  const byKind = ['mensualidad', 'cambio_plan', 'anualidad', 'producto', 'otro', 'saldo_favor'].map(k => ({ k, total: lines.filter(l => soldToday.some(s => s.id === l.sale_id) && l.kind === k).reduce((n, l) => n + Number(l.amount_cents), 0) })).filter(x => x.total);
+  const requests = sales.filter(s => s.cancel_requested_at && !s.cancelled_at);
   const KIND: Record<string, string> = { mensualidad: 'Mensualidades', cambio_plan: 'Cambios de plan', anualidad: 'Anualidades', producto: 'Productos', otro: 'Otros', saldo_favor: 'Saldo a favor (anticipos)' };
   const cashIds = new Set(methods.filter(m => m.kind === 'efectivo').map(m => m.id));
-  const cashOf = (sess: Session) => pays.filter(p => cashIds.has(p.payment_method_id) && valid.some(s => s.id === p.sale_id && s.session_id === sess.id)).reduce((n, p) => n + Number(p.amount_cents), 0);
+  const cashOf = (sess: Session) => pays.filter(p => cashIds.has(p.payment_method_id) && vIds.has(p.sale_id) && p.session_id === sess.id).reduce((n, p) => n + Number(p.amount_cents), 0);
   if (open) return <div className="space-y-2"><button className="text-sm text-brand" onClick={() => setOpen(null)}>← Regresar</button><Receipt saleId={open} onNew={() => setOpen(null)} /></div>;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3"><input type="date" className={field} value={date} max={todayMx()} onChange={e => setDate(e.target.value)} />
-        <span className="text-lg font-semibold">{money(valid.reduce((n, s) => n + Number(s.total_cents), 0))}</span><span className="text-sm text-slate-500">{valid.length} recibos</span>
+        <span className="text-lg font-semibold">Entró {money(dayPays.reduce((n, p) => n + Number(p.amount_cents), 0))}</span>
+        <span className="text-sm text-slate-500">{soldToday.length} recibos{abonos ? ` · abonos a recibos anteriores ${money(abonos)}` : ''}{pendingToday > 0 ? ` · quedó a deber ${money(pendingToday)}` : ''}</span>
         <button className="ml-auto rounded-lg border px-3 py-2 text-sm print:hidden" onClick={() => window.print()}>Imprimir corte</button></div>
+      {authorizer && requests.length > 0 && <div className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3 text-sm">
+        <h4 className="font-semibold">Cancelaciones por autorizar</h4>
+        {requests.map(s => <p key={s.id} className="flex flex-wrap items-center gap-2">F {s.folio} · {money(s.total_cents)} · pidió {s.cancel_requested_name}: "{s.cancel_request_reason}"
+          <button className="rounded bg-red-600 px-2 py-0.5 text-xs text-white" onClick={() => cancel(s)}>Autorizar</button><button className="text-xs text-slate-600" onClick={() => reject(s)}>Rechazar</button></p>)}</div>}
       <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-xl bg-white p-4 text-sm shadow-sm"><h4 className="mb-1 font-semibold">Por forma de pago</h4>
           {byMethod.map(x => <p key={x.m.id} className="flex justify-between"><span>{x.m.name}</span><b>{money(x.total)}</b></p>)}{!byMethod.length && <p className="text-slate-400">Sin cobros.</p>}</div>
@@ -293,15 +354,19 @@ function Today({ co, methods }: { co: string; methods: Method[] }) {
             <td className="px-3 py-1.5">{new Date(s.sold_at).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}</td>
             <td className="px-3 py-1.5">{s.student_id ? names[s.student_id] ?? '…' : s.customer_name ?? 'Mostrador'}</td>
             <td className="px-3 py-1.5 text-xs">{lines.filter(l => l.sale_id === s.id).map(l => l.description).join(' · ')}{s.cancelled_at && <span className="block no-underline">Cancelada: {s.cancel_reason}</span>}</td>
-            <td className="px-3 py-1.5 text-xs">{pays.filter(p => p.sale_id === s.id).map(p => methods.find(m => m.id === p.payment_method_id)?.name).join(', ')}</td>
-            <td className="px-3 py-1.5 text-right">{money(s.total_cents)}</td><td className="px-3 py-1.5 text-xs">{s.seller_name}</td>
-            <td className="px-3 py-1.5 text-right">{!s.cancelled_at && (can('cashbox', 'configure') || (s.created_by === user?.id && date === todayMx())) && <button className="text-xs text-red-600" onClick={() => cancel(s)}>Cancelar</button>}</td>
+            <td className="px-3 py-1.5 text-xs">{pays.filter(p => p.sale_id === s.id && (p.paid_on ?? date) === date).map(p => `${methods.find(m => m.id === p.payment_method_id)?.name} ${money(p.amount_cents)}`).join(', ')}</td>
+            <td className="px-3 py-1.5 text-right">{money(s.total_cents)}{(() => { const pd = pays.filter(p => p.sale_id === s.id).reduce((n, p) => n + Number(p.amount_cents), 0); return pd < s.total_cents && !s.cancelled_at ? <span className="block text-xs text-red-700">debe {money(s.total_cents - pd)}</span> : null; })()}
+              {(s.sold_on ?? date) !== date && <span className="block text-xs text-slate-500">abono · recibo del {s.sold_on}</span>}</td><td className="px-3 py-1.5 text-xs">{s.seller_name}</td>
+            <td className="px-3 py-1.5 text-right text-xs">{!s.cancelled_at && (s.cancel_requested_at
+              ? <span className="text-amber-700">cancelación pedida{authorizer && <button className="ml-1 text-red-600" onClick={() => cancel(s)}>Autorizar</button>}</span>
+              : (authorizer || can('cashbox', 'edit')) && <button className="text-red-600" onClick={() => cancel(s)}>{authorizer ? 'Cancelar' : 'Pedir cancelación'}</button>)}</td>
           </tr>)}
             {!sales.length && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Sin ventas este día.</td></tr>}</tbody>
         </table>
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      <p className="text-xs text-slate-500">Esto es el flujo de caja: el dinero que entró este día. Una mensualidad pagada por adelantado entra completa hoy aunque corresponda a otro mes.</p>
+      <p className="text-xs text-slate-500">Esto es el flujo de caja: el dinero que entró este día, incluidos los abonos a recibos de otros días. Una mensualidad pagada por adelantado entra completa hoy aunque corresponda a otro mes.
+        {!authorizer && ' Las cancelaciones las autoriza quien tenga permiso de Caja → Configurar.'}</p>
     </div>
   );
 }
@@ -311,10 +376,8 @@ function CloseCash({ session, methods, onDone }: { session: Session; methods: Me
   const [cash, setCash] = useState(0); const [counted, setCounted] = useState(''); const [note, setNote] = useState(''); const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
     (async () => {
-      const s = await supabase.from('sales').select('id').eq('session_id', session.id).is('cancelled_at', null); const ids = (s.data ?? []).map(x => x.id);
-      if (!ids.length) return setCash(0);
       const cashIds = methods.filter(m => m.kind === 'efectivo').map(m => m.id);
-      const p = await supabase.from('sale_payments').select('amount_cents,payment_method_id').in('sale_id', ids);
+      const p = await supabase.from('sale_payments').select('amount_cents,payment_method_id,sales!inner(cancelled_at)').eq('session_id', session.id).is('sales.cancelled_at', null);
       setCash((p.data ?? []).filter(x => cashIds.includes(x.payment_method_id)).reduce((n, x) => n + Number(x.amount_cents), 0));
     })();
   }, [session.id, methods]);
@@ -348,7 +411,14 @@ function Debts({ co }: { co: string }) {
       const r = await computeOwed({ company: co, studentIds: ids }); if (r.error) setMsg(r.error);
       const st = ids.length ? await supabase.from('students').select('id,full_name').in('id', ids) : { data: [] };
       const nm = new Map((st.data ?? []).map(x => [x.id, x.full_name]));
-      setRows(ids.map(id => ({ id, name: nm.get(id) ?? '', items: r.items.filter(i => i.studentId === id) })).filter(x => x.items.length).sort((a, b) => b.items.reduce((n, i) => n + i.amount, 0) - a.items.reduce((n, i) => n + i.amount, 0)));
+      const b = await supabase.from('sale_balances').select('*').eq('company_id', co).gt('balance_cents', 0);
+      const bals = ((b.data as Bal[]) ?? []).filter(x => x.student_id);
+      const allIds = [...new Set([...ids, ...bals.map(x => x.student_id as string)])];
+      const missing = allIds.filter(id => !nm.has(id));
+      if (missing.length) { const m2 = await supabase.from('students').select('id,full_name').in('id', missing); for (const x of m2.data ?? []) nm.set(x.id, x.full_name); }
+      const balItems = (id: string): OwedItem[] => bals.filter(x => x.student_id === id).map(x => ({ key: `bal|${x.sale_id}`, kind: 'mensualidad', studentId: id, description: `Saldo del recibo F ${x.folio}`,
+        base: Number(x.balance_cents), discount: 0, surcharge: 0, amount: Number(x.balance_cents), detail: { folio: x.folio }, overdue: true, future: false }));
+      setRows(allIds.map(id => ({ id, name: nm.get(id) ?? '', items: [...r.items.filter(i => i.studentId === id), ...balItems(id)] })).filter(x => x.items.length).sort((a, b) => b.items.reduce((n, i) => n + i.amount, 0) - a.items.reduce((n, i) => n + i.amount, 0)));
     })();
   }, [co]);
   if (!rows) return <p className="text-sm text-slate-400">Calculando adeudos…</p>;
@@ -362,7 +432,7 @@ function Debts({ co }: { co: string }) {
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Alumna</th><th className="px-3 py-2">Debe</th><th className="px-3 py-2 text-right">Total hoy</th></tr></thead>
           <tbody>{list.map(r => <tr key={r.id} className="border-t align-top"><td className="px-3 py-1.5 font-medium">{r.name}</td>
-            <td className="px-3 py-1.5 text-xs">{r.items.map(i => <span key={i.key} className={`mr-2 inline-block ${i.overdue ? 'text-red-700' : ''}`}>{i.kind === 'anualidad' ? `Anualidad ${i.year}` : `${i.kind === 'cambio_plan' ? 'Cambio de plan ' : ''}${monthName(i.month!.slice(0, 7))}`} {money(i.amount)}</span>)}</td>
+            <td className="px-3 py-1.5 text-xs">{r.items.map(i => <span key={i.key} className={`mr-2 inline-block ${i.overdue ? 'text-red-700' : ''}`}>{i.key.startsWith('bal|') ? i.description : i.kind === 'anualidad' ? `Anualidad ${i.year}` : `${i.kind === 'cambio_plan' ? 'Cambio de plan ' : ''}${monthName(i.month!.slice(0, 7))}`} {money(i.amount)}</span>)}</td>
             <td className="px-3 py-1.5 text-right font-semibold">{money(r.items.reduce((n, i) => n + i.amount, 0))}</td></tr>)}
             {!list.length && <tr><td colSpan={3} className="px-3 py-6 text-center text-green-700">Nadie debe.</td></tr>}</tbody></table>
       </div>

@@ -930,3 +930,36 @@ begin
   reset role;
   raise notice 'OK: caja y cobros';
 end $$;
+
+-- 0044: abonos, cancelación autorizada, productos eliminados
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        ef uuid := (select id from public.payment_methods where name = 'Efectivo');
+        st uuid; sale uuid; pr uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  perform public.open_cash(vin, 0);
+  insert into public.students (company_id, full_name) values (vin, 'Abonadora') returning id into st;
+  sale := public.register_sale(vin, st, null, jsonb_build_array(jsonb_build_object('kind','otro','description','Leotardo','amount_cents',180000)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',ef,'amount_cents',158500)));
+  if (select balance_cents from public.sale_balances where sale_id = sale) <> 21500 then raise exception 'no quedó el adeudo'; end if;
+  ok := false; begin perform public.add_payment(sale, ef, 30000); exception when others then ok := true; end;
+  if not ok then raise exception 'abonó más de lo que debe'; end if;
+  perform public.add_payment(sale, ef, 21500);
+  if (select balance_cents from public.sale_balances where sale_id = sale) <> 0 then raise exception 'el abono no liquidó'; end if;
+  ok := false; begin perform public.register_sale(vin, null, 'Mostrador', jsonb_build_array(jsonb_build_object('kind','otro','description','x','amount_cents',1000)),
+    jsonb_build_array(jsonb_build_object('payment_method_id',ef,'amount_cents',500))); exception when others then ok := true; end;
+  if not ok then raise exception 'mostrador dejó adeudo'; end if;
+  perform public.request_cancel_sale(sale, 'Se equivocó de talla');
+  perform public.cancel_sale(sale, null);
+  if (select cancel_reason from public.sales where id = sale) <> 'Se equivocó de talla' then raise exception 'motivo de la solicitud'; end if;
+  insert into public.products (company_id, category, name, price_cents) values (vin, 'accesorio', 'Moño', 8000) returning id into pr;
+  update public.products set price_cents = 9000 where id = pr;
+  update public.products set deleted_at = now() where id = pr;
+  insert into public.products (company_id, category, name, price_cents) values (vin, 'accesorio', 'Moño', 9500);   -- mismo nombre ya se puede reusar
+  if (select is_active from public.products where id = pr) then raise exception 'el eliminado sigue activo'; end if;
+  reset role;
+  raise notice 'OK: abonos, cancelación autorizada y productos';
+end $$;
