@@ -17,7 +17,7 @@ interface Sub { id: string; company_id: string; plan_id: string; student_id: str
   replaces_id: string | null; cancelled_at: string | null; created_at: string }
 interface Mem { id: string; subscription_id: string; student_id: string; class_id: string | null; weekdays: number[] }
 interface Adj { id: string; subscription_id: string; kind: string; label: string; mode: 'pct' | 'monto'; value: number; from_month: string; to_month: string | null; cancelled_at: string | null }
-interface Grp { id: string; activity: string; start_time: string; end_time: string; capacity: number | null; is_active: boolean }
+interface Grp { id: string; activity: string; start_time: string; end_time: string; capacity: number | null; is_active: boolean; discipline: string | null }
 
 /** Plan(es), familia y becas de una alumna — va dentro de su ficha. */
 export default function StudentPlans({ s, onChanged }: { s: Stu; onChanged?: () => void }) {
@@ -34,7 +34,7 @@ export default function StudentPlans({ s, onChanged }: { s: Stu; onChanged?: () 
     const me = (st.data as Stu) ?? s; setStu(me);
     const [p, g, m1] = await Promise.all([
       supabase.from('plans_v').select('*').eq('company_id', s.company_id).eq('is_active', true).order('discipline').order('sort'),
-      supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,is_active').eq('company_id', s.company_id).eq('is_active', true).order('activity').order('start_time'),
+      supabase.from('class_groups').select('id,activity,start_time,end_time,capacity,is_active,discipline').eq('company_id', s.company_id).eq('is_active', true).order('activity').order('start_time'),
       supabase.from('subscription_members').select('*').eq('student_id', s.id)]);
     setPlans((p.data as Plan[]) ?? []); setGroups((g.data as Grp[]) ?? []);
     const memberSubIds = ((m1.data as Mem[]) ?? []).map(x => x.subscription_id);
@@ -143,7 +143,7 @@ function FamilyBox({ stu, family, siblings, canEdit, onChanged }: { stu: Stu; fa
 
 // ---------------------------------------------------------------- Asignar plan (con cambio de plan)
 function AssignPlan({ s, family, plans, groups, subs, onCancel, onDone }: { s: Stu; family: { id: string } | null; plans: Plan[]; groups: Grp[]; subs: Sub[]; onCancel: () => void; onDone: () => void }) {
-  const [planId, setPlanId] = useState(''); const [from, setFrom] = useState(thisMonth()); const [classId, setClassId] = useState('');
+  const [disc, setDisc] = useState(''); const [planId, setPlanId] = useState(''); const [from, setFrom] = useState(thisMonth()); const [classId, setClassId] = useState('');
   const [days, setDays] = useState<number[]>([]); const [taken, setTaken] = useState<Record<string, number>>({});
   const [ask, setAsk] = useState<Sub | null>(null); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   const p = plans.find(x => x.id === planId);
@@ -176,12 +176,14 @@ function AssignPlan({ s, family, plans, groups, subs, onCancel, onDone }: { s: S
   return (
     <div className="space-y-2 rounded-lg border-2 border-brand/30 p-3 text-sm">
       <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs">Plan<select className={`${field} block`} value={planId} onChange={e => setPlanId(e.target.value)}>
-          <option value="">Elige…</option>{disciplines.map(d => <optgroup key={d} label={d}>{plans.filter(x => x.discipline === d && x.kind !== 'familiar').map(x =>
-            <option key={x.id} value={x.id}>{x.name}{x.kind === 'familiar' ? ' (familiar)' : ''} · {x.price_cents != null ? formatMXN(x.price_cents) : 'sin precio'}</option>)}</optgroup>)}</select></label>
+        <label className="text-xs">Disciplina<select className={`${field} block`} value={disc} onChange={e => { setDisc(e.target.value); setPlanId(''); setClassId(''); }}>
+          <option value="">Elige…</option>{disciplines.map(d => <option key={d} value={d}>{d}</option>)}</select></label>
+        <label className="text-xs">Plan<select className={`${field} block`} disabled={!disc} value={planId} onChange={e => setPlanId(e.target.value)}>
+          <option value="">Elige…</option>{plans.filter(x => x.discipline === disc && x.kind !== 'familiar').map(x =>
+            <option key={x.id} value={x.id}>{x.name} · {x.price_cents != null ? formatMXN(x.price_cents) : 'sin precio'}</option>)}</select></label>
         <label className="text-xs">Desde<input type="month" className={`${field} block`} value={from} onChange={e => setFrom(e.target.value)} /></label>
         <label className="text-xs">Grupo<select className={`${field} block`} value={classId} onChange={e => setClassId(e.target.value)}>
-          <option value="">Sin grupo por ahora</option>{groups.map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
+          <option value="">Sin grupo por ahora</option>{groups.filter(g => !disc || !groups.some(x => x.discipline === disc) || g.discipline === disc).map(g => { const t = taken[g.id] ?? 0; const full = g.capacity !== null && t >= g.capacity;
             return <option key={g.id} value={g.id} disabled={full}>{g.activity} {g.start_time}–{g.end_time} · {t}{g.capacity ? `/${g.capacity}` : ''}{full ? ' · lleno' : ''}</option>; })}</select></label>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-slate-500">Días que viene:</span>

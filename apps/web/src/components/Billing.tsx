@@ -45,90 +45,105 @@ export default function Billing() {
 }
 
 // ---------------------------------------------------------------- Planes
+const hoursName = (h: number) => `${h} ${h === 1 ? 'hora' : 'horas'} por semana`;
+
 function Plans({ co, canCfg }: { co: string; canCfg: boolean }) {
   const [plans, setPlans] = useState<Plan[]>([]); const [msg, setMsg] = useState<string | null>(null);
-  const [form, setForm] = useState({ discipline: '', name: '', hours: '', kind: 'individual', max: '2', price: '', from: thisMonth() });
-  const [priceFor, setPriceFor] = useState<Plan | null>(null); const [np, setNp] = useState({ price: '', from: thisMonth() });
-  const [hist, setHist] = useState<{ effective_month: string; price_cents: number; created_at: string }[]>([]);
+  const [from, setFrom] = useState(thisMonth());
+  const [hist, setHist] = useState<{ plan: Plan; rows: { effective_month: string; price_cents: number; created_at: string }[] } | null>(null);
+  const [newDisc, setNewDisc] = useState<{ name: string; rows: { hours: string; price: string }[] } | null>(null);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('plans_v').select('*').eq('company_id', co).order('discipline').order('sort').order('name');
+    const { data, error } = await supabase.from('plans_v').select('*').eq('company_id', co).order('discipline').order('hours_per_week').order('name');
     if (error) setMsg(error.message); setPlans((data as Plan[]) ?? []);
   }, [co]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (!priceFor) return;
-    supabase.from('plan_prices').select('effective_month,price_cents,created_at').eq('plan_id', priceFor.id).order('effective_month', { ascending: false }).order('created_at', { ascending: false })
-      .then(r => setHist(r.data ?? []));
-  }, [priceFor]);
   const disciplines = [...new Set(plans.map(p => p.discipline))];
 
-  async function add(ev: React.FormEvent) {
-    ev.preventDefault(); setMsg(null);
-    const { data, error } = await supabase.from('plans').insert({ company_id: co, discipline: form.discipline.trim(), name: form.name.trim(),
-      hours_per_week: form.hours ? +form.hours : null, kind: form.kind, max_members: form.kind === 'familiar' ? +form.max : null,
-      sort: plans.filter(p => p.discipline === form.discipline.trim()).length + 1 }).select('id').single();
-    if (error) return setMsg(error.message.includes('unique') ? 'Ya existe un plan con ese nombre en esa disciplina.' : error.message);
-    const r = await supabase.from('plan_prices').insert({ plan_id: data.id, effective_month: `${form.from}-01`, price_cents: toCents(form.price) });
-    if (r.error) return setMsg(r.error.message);
-    setForm({ ...form, name: '', hours: '', price: '' }); load();
+  async function addTier(discipline: string, hours: string, price: string, name?: string) {
+    const h = hours ? +hours : null;
+    const { data, error } = await supabase.from('plans').insert({ company_id: co, discipline, name: (name?.trim() || (h ? hoursName(h) : '')).trim(),
+      hours_per_week: h, sort: plans.filter(p => p.discipline === discipline).length + 1 }).select('id').single();
+    if (error) return error.message.includes('unique') ? `Ya existe "${name || hoursName(h ?? 0)}" en ${discipline}.` : error.message;
+    if (price) { const r = await supabase.from('plan_prices').insert({ plan_id: data.id, effective_month: `${from}-01`, price_cents: toCents(price) }); if (r.error) return r.error.message; }
+    return null;
   }
-  async function setPrice() {
-    if (!priceFor) return;
-    const { error } = await supabase.from('plan_prices').insert({ plan_id: priceFor.id, effective_month: `${np.from}-01`, price_cents: toCents(np.price) });
-    if (error) return setMsg(error.message); setPriceFor(null); setNp({ price: '', from: thisMonth() }); load();
+  async function setPrice(p: Plan, price: string) {
+    if (!price.trim() || toCents(price) === p.price_cents) return;
+    const { error } = await supabase.from('plan_prices').insert({ plan_id: p.id, effective_month: `${from}-01`, price_cents: toCents(price) });
+    if (error) setMsg(error.message); else load();
   }
-  async function toggle(p: Plan) {
-    const { error } = await supabase.from('plans').update({ is_active: !p.is_active }).eq('id', p.id); if (error) setMsg(error.message); else load();
+  async function patch(p: Plan, v: Partial<Plan>) { const { error } = await supabase.from('plans').update(v).eq('id', p.id); if (error) setMsg(error.message); else load(); }
+  async function showHist(p: Plan) {
+    const r = await supabase.from('plan_prices').select('effective_month,price_cents,created_at').eq('plan_id', p.id).order('effective_month', { ascending: false }).order('created_at', { ascending: false });
+    setHist({ plan: p, rows: r.data ?? [] });
+  }
+  async function saveDisc() {
+    if (!newDisc) return; setMsg(null);
+    for (const r of newDisc.rows.filter(r => r.hours || r.price)) { const e = await addTier(newDisc.name.trim(), r.hours, r.price); if (e) return setMsg(e); }
+    setNewDisc(null); load();
   }
 
   return (
     <div className="space-y-4">
-      {disciplines.map(d => {
-        const list = plans.filter(p => p.discipline === d);
-        return (
-          <div key={d} className="overflow-x-auto rounded-xl bg-white shadow-sm">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">{d}</th><th className="px-3 py-2">Horas/sem</th>
-                <th className="px-3 py-2">Cobro</th><th className="px-3 py-2 text-right">Precio vigente</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
-              <tbody>{list.map(p => (
-                <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
-                  <td className="px-3 py-2 font-medium">{p.name}</td><td className="px-3 py-2">{p.hours_per_week ?? '—'}</td>
-                  <td className="px-3 py-2">{p.kind === 'familiar' ? `Familiar (hasta ${p.max_members})` : 'Mensual'}</td>
-                  <td className="px-3 py-2 text-right">{p.price_cents !== null ? formatMXN(p.price_cents) : '—'}</td>
-                  <td className="px-3 py-2 text-right">{p.active_subs}</td>
-                  <td className="space-x-3 whitespace-nowrap px-3 py-2 text-right text-xs">
-                    <button className="text-brand" onClick={() => { setPriceFor(p); setNp({ price: '', from: thisMonth() }); }}>{canCfg ? 'Precio / historial' : 'Historial'}</button>
-                    {canCfg && <button className="text-slate-500" onClick={() => toggle(p)}>{p.is_active ? 'Desactivar' : 'Activar'}</button>}</td>
-                </tr>))}
-                <tr className="border-t bg-slate-50 text-xs font-semibold"><td className="px-3 py-1.5" colSpan={4}>Total {d}</td>
-                  <td className="px-3 py-1.5 text-right">{list.reduce((n, p) => n + p.active_subs, 0)}</td><td /></tr>
-              </tbody>
-            </table>
-          </div>);
-      })}
-      {!plans.length && <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">Aún no hay planes en esta sucursal.</p>}
+      {canCfg && <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-3 text-sm shadow-sm">
+        <span>Los precios que cambies aplican desde</span><input type="month" className={field} value={from} onChange={e => setFrom(e.target.value)} />
+        <span className="text-xs text-slate-500">· los meses anteriores conservan su precio (queda historial).</span>
+        <button className={`${btn} ml-auto`} onClick={() => setNewDisc({ name: '', rows: [{ hours: '1', price: '' }, { hours: '2', price: '' }, { hours: '3', price: '' }, { hours: '4', price: '' }] })}>+ Nueva disciplina</button>
+      </div>}
 
-      {priceFor && (
-        <div className="space-y-2 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
-          <div className="flex items-center"><b>{priceFor.discipline} · {priceFor.name}</b><button className="ml-auto text-slate-500" onClick={() => setPriceFor(null)}>Cerrar</button></div>
-          {canCfg && <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs">Nuevo precio<input className={`${field} block w-32`} placeholder="2015" value={np.price} onChange={e => setNp({ ...np, price: e.target.value })} /></label>
-            <label className="text-xs">A partir de<input type="month" className={`${field} block`} value={np.from} onChange={e => setNp({ ...np, from: e.target.value })} /></label>
-            <button disabled={!np.price} className={btn} onClick={setPrice}>Guardar precio</button>
-            <span className="text-xs text-slate-500">Los meses anteriores conservan su precio.</span></div>}
-          <div className="text-xs text-slate-600">{hist.map((h, i) => <p key={i}>Desde {h.effective_month.slice(0, 7)}: <b>{formatMXN(h.price_cents)}</b> <span className="text-slate-400">(capturado {h.created_at.slice(0, 10)})</span></p>)}</div>
-        </div>)}
+      {newDisc && <div className="space-y-2 rounded-xl border-2 border-brand/30 bg-white p-4 text-sm shadow-sm">
+        <label className="text-xs">Disciplina<input autoFocus className={`${field} block w-64`} placeholder="Baby Gym" value={newDisc.name} onChange={e => setNewDisc({ ...newDisc, name: e.target.value })} /></label>
+        <table className="text-sm"><thead className="text-left text-xs text-slate-500"><tr><th className="pr-3">Horas por semana</th><th>Precio mensual</th></tr></thead>
+          <tbody>{newDisc.rows.map((r, i) => <tr key={i}>
+            <td className="py-1 pr-3"><input type="number" step="0.5" min={0.5} className={`${field} w-24`} value={r.hours} onChange={e => setNewDisc({ ...newDisc, rows: newDisc.rows.map((x, j) => j === i ? { ...x, hours: e.target.value } : x) })} /></td>
+            <td className="py-1"><input className={`${field} w-28`} placeholder="$" value={r.price} onChange={e => setNewDisc({ ...newDisc, rows: newDisc.rows.map((x, j) => j === i ? { ...x, price: e.target.value } : x) })} /></td>
+            <td className="pl-2"><button className="text-xs text-red-600" onClick={() => setNewDisc({ ...newDisc, rows: newDisc.rows.filter((_, j) => j !== i) })}>Quitar</button></td></tr>)}</tbody></table>
+        <button className="text-xs text-brand" onClick={() => setNewDisc({ ...newDisc, rows: [...newDisc.rows, { hours: '', price: '' }] })}>+ Otra opción de horas</button>
+        <div className="flex gap-2"><button disabled={!newDisc.name.trim()} className={btn} onClick={saveDisc}>Guardar disciplina</button><button className="text-slate-500" onClick={() => setNewDisc(null)}>Cancelar</button></div>
+      </div>}
 
-      {canCfg && <form onSubmit={add} className="flex flex-wrap items-end gap-2 rounded-xl bg-white p-4 shadow-sm">
-        <label className="text-xs">Disciplina<input required list="disc" className={`${field} block w-40`} value={form.discipline} onChange={e => setForm({ ...form, discipline: e.target.value })} placeholder="Baby Gym" />
-          <datalist id="disc">{disciplines.map(d => <option key={d} value={d} />)}</datalist></label>
-        <label className="text-xs">Nombre del plan<input required className={`${field} block w-48`} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="2 horas por semana" /></label>
-        <label className="text-xs">Horas/sem<input type="number" step="0.5" className={`${field} block w-20`} value={form.hours} onChange={e => setForm({ ...form, hours: e.target.value })} /></label>
-        <label className="text-xs">Precio mensual<input required className={`${field} block w-28`} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} /></label>
-        <label className="text-xs">Desde<input type="month" className={`${field} block`} value={form.from} onChange={e => setForm({ ...form, from: e.target.value })} /></label>
-        <button className={btn}>Agregar plan</button>
-      </form>}
+      {disciplines.map(d => <Discipline key={d} d={d} list={plans.filter(p => p.discipline === d)} canCfg={canCfg}
+        onPrice={setPrice} onPatch={patch} onHist={showHist}
+        onAdd={async (h, pr, n) => { setMsg(null); const e = await addTier(d, h, pr, n); if (e) setMsg(e); else load(); }} />)}
+      {!plans.length && !newDisc && <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">Aún no hay planes. Empieza con "+ Nueva disciplina".</p>}
+
+      {hist && <div className="space-y-1 rounded-xl bg-white p-4 text-sm shadow-sm">
+        <div className="flex"><b>Historial · {hist.plan.discipline} · {hist.plan.name}</b><button className="ml-auto text-slate-500" onClick={() => setHist(null)}>Cerrar</button></div>
+        {hist.rows.map((h, i) => <p key={i} className="text-xs">Desde {h.effective_month.slice(0, 7)}: <b>{formatMXN(h.price_cents)}</b> <span className="text-slate-400">(capturado {h.created_at.slice(0, 10)})</span></p>)}
+      </div>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
+    </div>
+  );
+}
+
+function Discipline({ d, list, canCfg, onPrice, onPatch, onHist, onAdd }: { d: string; list: Plan[]; canCfg: boolean;
+  onPrice: (p: Plan, v: string) => void; onPatch: (p: Plan, v: Partial<Plan>) => void; onHist: (p: Plan) => void; onAdd: (h: string, price: string, name: string) => void }) {
+  const [row, setRow] = useState({ hours: '', price: '', name: '' });
+  return (
+    <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2 text-sm normal-case text-slate-800">{d}</th>
+          <th className="px-3 py-2">Horas/sem</th><th className="px-3 py-2 text-right">Precio mensual</th><th className="px-3 py-2 text-right">Alumnas este mes</th><th className="px-3 py-2"></th></tr></thead>
+        <tbody>{list.map(p => (
+          <tr key={p.id} className={`border-t ${p.is_active ? '' : 'text-slate-400'}`}>
+            <td className="px-3 py-1.5">{canCfg ? <input className="w-56 rounded border px-2 py-1" defaultValue={p.name} onBlur={e => e.target.value.trim() && e.target.value !== p.name && onPatch(p, { name: e.target.value.trim() })} /> : p.name}</td>
+            <td className="px-3 py-1.5">{p.hours_per_week ?? '—'}</td>
+            <td className="px-3 py-1.5 text-right">{canCfg ? <input key={p.price_cents ?? 'x'} className="w-28 rounded border px-2 py-1 text-right" placeholder="sin precio"
+              defaultValue={p.price_cents != null ? (p.price_cents / 100).toFixed(2) : ''} onBlur={e => onPrice(p, e.target.value)} /> : p.price_cents != null ? formatMXN(p.price_cents) : '—'}</td>
+            <td className="px-3 py-1.5 text-right">{p.active_subs}</td>
+            <td className="space-x-3 whitespace-nowrap px-3 py-1.5 text-right text-xs"><button className="text-brand" onClick={() => onHist(p)}>Historial</button>
+              {canCfg && <button className="text-slate-500" onClick={() => onPatch(p, { is_active: !p.is_active })}>{p.is_active ? 'Desactivar' : 'Activar'}</button>}</td>
+          </tr>))}
+          {canCfg && <tr className="border-t bg-slate-50/60">
+            <td className="px-3 py-1.5"><input className="w-56 rounded border px-2 py-1" placeholder="Nombre (opcional)" value={row.name} onChange={e => setRow({ ...row, name: e.target.value })} /></td>
+            <td className="px-3 py-1.5"><input type="number" step="0.5" min={0.5} className="w-20 rounded border px-2 py-1" placeholder="horas" value={row.hours} onChange={e => setRow({ ...row, hours: e.target.value })} /></td>
+            <td className="px-3 py-1.5 text-right"><input className="w-28 rounded border px-2 py-1 text-right" placeholder="$" value={row.price} onChange={e => setRow({ ...row, price: e.target.value })} /></td>
+            <td colSpan={2} className="px-3 py-1.5 text-right"><button disabled={!row.hours && !row.name.trim()} className="text-sm text-brand disabled:text-slate-300"
+              onClick={() => { onAdd(row.hours, row.price, row.name); setRow({ hours: '', price: '', name: '' }); }}>+ Agregar opción</button></td></tr>}
+          <tr className="border-t bg-slate-50 text-xs font-semibold"><td className="px-3 py-1.5" colSpan={3}>Total {d}</td>
+            <td className="px-3 py-1.5 text-right">{list.reduce((n, p) => n + Number(p.active_subs), 0)}</td><td /></tr>
+        </tbody>
+      </table>
     </div>
   );
 }
