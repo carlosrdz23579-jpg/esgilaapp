@@ -196,6 +196,7 @@ const mondayOf = (iso: string) => { const d = new Date(iso + 'T12:00:00Z'); cons
 const plusDays = (iso: string, n: number) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 function WeekView({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
   const [mon, setMon] = useState(mondayOf(todayMx())); const [fClass, setFClass] = usePersisted('alumnas.semana.clase', '');
+  const [mode, setMode] = usePersisted<'clases' | 'faltas'>('alumnas.semana.modo', 'faltas');
   const [att, setAtt] = useState<Att[]>([]); const [trials, setTrials] = useState<Trial[]>([]);
   const days = Array.from({ length: 6 }, (_, i) => plusDays(mon, i));
   useEffect(() => {
@@ -220,9 +221,12 @@ function WeekView({ classes, students, enr, onOpen }: { classes: Cls[]; students
         <button className="text-sm text-brand" onClick={() => setMon(mondayOf(today))}>Esta semana</button>
         <select className={field} value={fClass} onChange={e => setFClass(e.target.value)}><option value="">Todas las clases</option>
           {classes.filter(c => c.is_active).map(c => <option key={c.id} value={c.id}>{c.activity} · {c.start_time}</option>)}</select>
+        <div className="inline-flex overflow-hidden rounded-lg border bg-white text-sm">{([['faltas', 'Reporte de faltas'], ['clases', 'Por clase']] as const).map(([k, l]) =>
+          <button key={k} onClick={() => setMode(k)} className={`px-3 py-2 ${mode === k ? 'bg-brand text-white' : ''}`}>{l}</button>)}</div>
         <button className="ml-auto rounded-lg border bg-white px-3 py-2 text-sm print:hidden" onClick={() => window.print()}>Imprimir</button>
       </div>
-      {shown.map(({ c, due, list }) => (
+      {mode === 'faltas' && <AbsenceReport mon={mon} days={days} shown={shown} att={att} />}
+      {mode === 'clases' && shown.map(({ c, due, list }) => (
         <div key={c.id} className="overflow-x-auto rounded-xl bg-white shadow-sm">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="px-3 py-2 text-left text-sm text-slate-800">{c.activity} · {c.start_time}–{c.end_time}</th>
@@ -243,7 +247,72 @@ function WeekView({ classes, students, enr, onOpen }: { classes: Cls[]; students
           </table>
         </div>))}
       {!shown.length && <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">No hay clases con alumnas esa semana.</p>}
-      <p className="text-xs text-slate-500">✓ verde: vino · ✓ ámbar: vino un día que no le tocaba · ✗: faltó · punto gris: le tocaba y no se marcó · círculo: le toca (día que aún no llega).</p>
+      {mode === 'clases' && <p className="text-xs text-slate-500">✓ verde: vino · ✓ ámbar: vino un día que no le tocaba · ✗: faltó · punto gris: le tocaba y no se marcó · círculo: le toca (día que aún no llega).</p>}
+    </div>
+  );
+}
+
+/** Quién faltó en la semana (sólo días que ya pasaron), con su teléfono y mensaje de WhatsApp listo. */
+function AbsenceReport({ mon, days, shown, att }: { mon: string; days: string[]; shown: { c: Cls; due: (d: string) => Set<string>; list: Stu[] }[]; att: Att[] }) {
+  const today = todayMx();
+  const [filter, setFilter] = usePersisted<'ninguna' | 'alguna' | 'todas'>('alumnas.faltas.filtro', 'alguna');
+  const [tpl, setTpl] = usePersisted('alumnas.faltas.mensaje', 'Hola {tutor}, te saludamos de ESGILA. Esta semana extrañamos a {alumna} en su clase de {clase} ({dias}). ¿Todo bien? Aquí la esperamos 🤸');
+  const [editTpl, setEditTpl] = useState(false);
+  const [contacts, setContacts] = useState<{ student_id: string; author_name: string | null; created_at: string }[]>([]);
+  const loadC = useCallback(async () => {
+    const r = await supabase.from('absence_contacts').select('student_id,author_name,created_at').eq('week_start', mon); setContacts(r.data ?? []);
+  }, [mon]);
+  useEffect(() => { loadC(); }, [loadC]);
+  // juntar por alumna todas sus clases de la semana
+  const byStudent = new Map<string, { s: Stu; expected: number; came: number; missed: { d: string; c: Cls }[]; classes: Set<string> }>();
+  for (const { c, due, list } of shown) for (const st of list) for (const d of days) {
+    if (d > today) continue;
+    const toca = due(d).has(st.id); if (!toca) continue;
+    const a = att.find(x => x.student_id === st.id && x.class_id === c.id && x.date === d);
+    const e = byStudent.get(st.id) ?? { s: st, expected: 0, came: 0, missed: [], classes: new Set<string>() };
+    e.expected++; e.classes.add(c.activity); if (a?.arrival) e.came++; else e.missed.push({ d, c });
+    byStudent.set(st.id, e);
+  }
+  const rows = [...byStudent.values()].filter(r => filter === 'todas' || (filter === 'ninguna' ? r.came === 0 : r.missed.length > 0))
+    .sort((a, b) => a.came / a.expected - b.came / b.expected || a.s.full_name.localeCompare(b.s.full_name));
+  const phoneOf = (s: Stu) => { const d = (s.guardian_phone || s.phone || '').replace(/\D/g, ''); return d.length === 10 ? `52${d}` : d.length >= 12 ? d : ''; };
+  const msgOf = (r: (typeof rows)[number]) => tpl.replace('{tutor}', r.s.guardian_name?.split(' ')[0] || '').replace('{alumna}', r.s.nickname || r.s.full_name.split(' ')[0])
+    .replace('{clase}', [...r.classes].join(' y ')).replace('{dias}', r.missed.map(m => `${WD[dow(m.d)].toLowerCase()} ${+m.d.slice(8)}`).join(', ')).replace(/\s+,/g, ',').replace('Hola ,', 'Hola,');
+  async function markSent(s: Stu) {
+    await supabase.from('absence_contacts').insert({ company_id: s.company_id, student_id: s.id, week_start: mon }); loadC();
+  }
+  const sent = (id: string) => contacts.find(c => c.student_id === id);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div className="inline-flex overflow-hidden rounded-lg border bg-white">{([['alguna', 'Faltaron al menos una vez'], ['ninguna', 'No vinieron en toda la semana'], ['todas', 'Todas']] as const).map(([k, l]) =>
+          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 ${filter === k ? 'bg-slate-800 text-white' : ''}`}>{l}</button>)}</div>
+        <span className="text-slate-500">{rows.length} alumnas · {rows.filter(r => sent(r.s.id)).length} ya avisadas</span>
+        <button className="ml-auto text-brand print:hidden" onClick={() => setEditTpl(!editTpl)}>{editTpl ? 'Listo' : 'Editar mensaje'}</button>
+      </div>
+      {editTpl && <div className="rounded-xl bg-white p-3 text-xs shadow-sm"><textarea rows={3} className={`${field} w-full`} value={tpl} onChange={e => setTpl(e.target.value)} />
+        <p className="mt-1 text-slate-500">Se reemplazan solos: {'{tutor}'} (nombre de mamá/papá), {'{alumna}'}, {'{clase}'} y {'{dias}'} (los días que faltó).</p></div>}
+      <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Alumna</th><th className="px-3 py-2">Vino</th><th className="px-3 py-2">Faltó</th>
+            <th className="px-3 py-2">Tutor / teléfono</th><th className="px-3 py-2 print:hidden"></th></tr></thead>
+          <tbody>{rows.map(r => { const ph = phoneOf(r.s); const done = sent(r.s.id); return (
+            <tr key={r.s.id} className={`border-t align-top ${done ? 'bg-green-50/50' : ''}`}>
+              <td className="px-3 py-2 font-medium">{r.s.full_name}<span className="block text-xs font-normal text-slate-500">{[...r.classes].join(', ')}</span></td>
+              <td className={`px-3 py-2 ${r.came === 0 ? 'font-semibold text-red-700' : ''}`}>{r.came} de {r.expected}</td>
+              <td className="px-3 py-2 text-xs">{r.missed.map(m => `${WD[dow(m.d)]} ${+m.d.slice(8)}`).join(', ') || '—'}</td>
+              <td className="px-3 py-2 text-xs">{r.s.guardian_name ?? '—'}<span className="block">{r.s.guardian_phone || r.s.phone || <span className="text-red-600">sin teléfono</span>}</span></td>
+              <td className="space-y-1 whitespace-nowrap px-3 py-2 text-right text-xs print:hidden">
+                {ph && r.missed.length > 0 && <a className="inline-block rounded-lg bg-green-600 px-3 py-1 text-white" href={`https://wa.me/${ph}?text=${encodeURIComponent(msgOf(r))}`} target="_blank" rel="noreferrer"
+                  onClick={() => !done && markSent(r.s)}>WhatsApp</a>}
+                {done ? <span className="block text-green-700">✓ avisada · {done.author_name} {new Date(done.created_at).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric' })}</span>
+                  : r.missed.length > 0 && <button className="block w-full text-right text-slate-500" onClick={() => markSent(r.s)}>Marcar avisada</button>}
+              </td>
+            </tr>); })}
+            {!rows.length && <tr><td colSpan={5} className="px-3 py-6 text-center text-green-700">Nadie en esta vista. 🎉</td></tr>}</tbody>
+        </table>
+      </div>
+      <p className="text-xs text-slate-500">Cuenta sólo los días que ya pasaron y en los que le tocaba clase. El botón WhatsApp abre el chat con el mensaje listo (usa el teléfono del tutor, o el de la alumna si no hay) y la marca como avisada.</p>
     </div>
   );
 }
