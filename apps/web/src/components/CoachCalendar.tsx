@@ -463,7 +463,9 @@ const KIND: Record<string, { label: string; cls: string }> = {
   junta: { label: 'Junta', cls: 'bg-amber-100 text-amber-800' }, festivo: { label: 'Día festivo / sin clases', cls: 'bg-slate-200 text-slate-700' },
   curso: { label: 'Curso', cls: 'bg-emerald-100 text-emerald-800' }, clase_especial: { label: 'Clase especial', cls: 'bg-sky-100 text-sky-800' },
   otro: { label: 'Otro', cls: 'bg-slate-100 text-slate-700' } };
-interface Ev { id: string; date: string; end_date: string | null; start_time: string | null; end_time: string | null; kind: string; title: string; notes: string | null; created_at: string }
+interface Ev { id: string; date: string; end_date: string | null; start_time: string | null; end_time: string | null; kind: string; title: string; notes: string | null; created_at: string;
+  audience?: string }
+type Target = { department_id?: string; group_id?: string; employee_id?: string };
 
 /** Itinerario general de la sucursal: competencias, juntas, festivos, cursos, clases especiales. */
 function Events({ companyId }: { companyId: string }) {
@@ -472,9 +474,22 @@ function Events({ companyId }: { companyId: string }) {
   const [evs, setEvs] = useState<Ev[]>([]); const [msg, setMsg] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<Ev> | null>(null); const [open, setOpen] = useState<Ev | null>(null);
   const canEdit = can('calendar', 'edit');
+  const [targets, setTargets] = useState<Target[]>([]); const [openTargets, setOpenTargets] = useState<Target[]>([]); const [tq, setTq] = useState('');
+  const [opts, setOpts] = useState<{ depts: { id: string; name: string }[]; groups: { id: string; name: string }[]; emps: { id: string; full_name: string }[] }>({ depts: [], groups: [], emps: [] });
+  useEffect(() => {
+    if (!canEdit) return;
+    Promise.all([supabase.from('departments').select('id,name').eq('company_id', companyId).order('name'), supabase.from('groups').select('id,name').eq('company_id', companyId).order('name'),
+      supabase.from('employees').select('id,full_name').eq('company_id', companyId).eq('state', 'activo').order('full_name')])
+      .then(([d, g, e]) => setOpts({ depts: d.data ?? [], groups: g.data ?? [], emps: e.data ?? [] }));
+  }, [companyId, canEdit]);
+  useEffect(() => { if (open) supabase.from('event_targets').select('department_id,group_id,employee_id').eq('event_id', open.id).then(r => setOpenTargets((r.data as Target[]) ?? [])); }, [open]);
+  const tName = (t: Target) => t.department_id ? `Depto. ${opts.depts.find(x => x.id === t.department_id)?.name ?? ''}` : t.group_id ? `Grupo ${opts.groups.find(x => x.id === t.group_id)?.name ?? ''}`
+    : opts.emps.find(x => x.id === t.employee_id)?.full_name ?? 'Persona';
+  const has = (t: Target) => targets.some(x => x.department_id === t.department_id && x.group_id === t.group_id && x.employee_id === t.employee_id);
+  const toggle = (t: Target) => setTargets(has(t) ? targets.filter(x => !(x.department_id === t.department_id && x.group_id === t.group_id && x.employee_id === t.employee_id)) : [...targets, t]);
   const first = `${month}-01`, last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).toISOString().slice(0, 10);
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('calendar_events').select('id,date,end_date,start_time,end_time,kind,title,notes,created_at')
+    const { data, error } = await supabase.from('calendar_events').select('id,date,end_date,start_time,end_time,kind,title,notes,created_at,audience')
       .eq('company_id', companyId).is('cancelled_at', null).lte('date', last).or(`end_date.gte.${first},and(end_date.is.null,date.gte.${first})`).order('date');
     if (error) setMsg(error.message); else setEvs((data as Ev[]) ?? []);
   }, [companyId, first, last]);
@@ -486,10 +501,14 @@ function Events({ companyId }: { companyId: string }) {
   async function save() {
     if (!form?.title?.trim() || !form.date) return setMsg('Falta título y fecha.');
     if (form.start_time && form.end_time && form.end_time <= form.start_time) return setMsg('La hora de fin debe ser después del inicio.');
-    const { error } = await supabase.from('calendar_events').insert({ company_id: companyId, date: form.date, end_date: form.end_date || null,
-      start_time: form.start_time || null, end_time: form.end_time || null, kind: form.kind ?? 'evento', title: form.title.trim(), notes: form.notes?.trim() || null });
+    const dirigido = form.audience === 'dirigido';
+    if (dirigido && !targets.length) return setMsg('Elige a quién va dirigido.');
+    const { data, error } = await supabase.from('calendar_events').insert({ company_id: companyId, date: form.date, end_date: form.end_date || null,
+      start_time: form.start_time || null, end_time: form.end_time || null, kind: form.kind ?? 'evento', title: form.title.trim(), notes: form.notes?.trim() || null,
+      audience: dirigido ? 'dirigido' : 'todos' }).select('id').single();
     if (error) return setMsg(error.message);
-    setForm(null); setMsg(null); load();
+    if (dirigido) { const t = await supabase.from('event_targets').insert(targets.map(x => ({ event_id: data.id, ...x }))); if (t.error) return setMsg(t.error.message); }
+    setForm(null); setTargets([]); setMsg(null); load();
   }
   async function cancel(e: Ev) {
     if (!window.confirm(`¿Cancelar "${e.title}"?`)) return;
@@ -514,7 +533,7 @@ function Events({ companyId }: { companyId: string }) {
             className={`min-h-[5.5rem] rounded-lg border bg-white p-1.5 ${iso === todayMx() ? 'border-brand ring-1 ring-brand' : ''}`}>
             <b>{+iso.slice(8)}</b>
             {on(iso).map(e => <button key={e.id} onClick={() => setOpen(e)} className={`mt-0.5 block w-full truncate rounded px-1 text-left ${KIND[e.kind]?.cls ?? ''}`}>
-              {e.start_time ? `${e.start_time} ` : ''}{e.title}</button>)}
+              {e.audience === 'dirigido' ? '👥 ' : ''}{e.start_time ? `${e.start_time} ` : ''}{e.title}</button>)}
           </div>))}
       </div>
       {canEdit && <p className="text-xs text-slate-500">Doble clic en un día para agregar un evento ahí.</p>}
@@ -529,6 +548,21 @@ function Events({ companyId }: { companyId: string }) {
           <label className="text-xs">Desde las<TimeSelect allowAny className={`${field} w-full`} value={form.start_time ?? ''} onChange={v => setForm({ ...form, start_time: v })} /></label>
           <label className="text-xs">Hasta las<TimeSelect allowAny className={`${field} w-full`} value={form.end_time ?? ''} onChange={v => setForm({ ...form, end_time: v })} /></label>
           <label className="text-xs sm:col-span-2">Notas / itinerario<textarea rows={4} className={`${field} w-full`} value={form.notes ?? ''} onChange={e => setForm({ ...form, notes: e.target.value })} /></label>
+          <div className="space-y-1 text-xs sm:col-span-2"><span className="block">Para quién</span>
+            <div className="inline-flex overflow-hidden rounded-lg border">{[['todos', 'Todos'], ['dirigido', 'Personas o grupos']].map(([k, l]) =>
+              <button key={k} type="button" className={`px-3 py-1.5 ${(form.audience ?? 'todos') === k ? 'bg-brand text-white' : ''}`} onClick={() => setForm({ ...form, audience: k })}>{l}</button>)}</div>
+            {form.audience === 'dirigido' && <div className="space-y-2 rounded-lg border p-2">
+              {targets.length > 0 && <div className="flex flex-wrap gap-1">{targets.map((t, i) => <span key={i} className="rounded-full bg-brand/10 px-2 py-0.5 text-brand">{tName(t)} <button onClick={() => toggle(t)}>×</button></span>)}</div>}
+              {opts.depts.length > 0 && <div><b>Departamentos</b><div className="flex flex-wrap gap-x-3">{opts.depts.map(d => <label key={d.id} className="flex items-center gap-1">
+                <input type="checkbox" checked={has({ department_id: d.id })} onChange={() => toggle({ department_id: d.id })} />{d.name}</label>)}</div></div>}
+              {opts.groups.length > 0 && <div><b>Grupos</b><div className="flex flex-wrap gap-x-3">{opts.groups.map(g => <label key={g.id} className="flex items-center gap-1">
+                <input type="checkbox" checked={has({ group_id: g.id })} onChange={() => toggle({ group_id: g.id })} />{g.name}</label>)}</div></div>}
+              <div><b>Personas</b><input className={`${field} my-1 w-full`} placeholder="Buscar persona…" value={tq} onChange={e => setTq(e.target.value)} />
+                <div className="flex max-h-40 flex-wrap gap-x-3 overflow-y-auto">{opts.emps.filter(e => !tq || e.full_name.toLowerCase().includes(tq.toLowerCase())).map(e => <label key={e.id} className="flex items-center gap-1">
+                  <input type="checkbox" checked={has({ employee_id: e.id })} onChange={() => toggle({ employee_id: e.id })} />{e.full_name}</label>)}</div></div>
+              <p className="text-slate-500">Sólo lo ven las personas elegidas (o de esos departamentos/grupos) y quien administra el calendario.</p>
+            </div>}
+          </div>
         </div>
         <div className="flex gap-2"><button className={btn} onClick={save}>Guardar</button><button className="text-sm" onClick={() => setForm(null)}>Cancelar</button></div>
       </Modal>}
@@ -536,6 +570,7 @@ function Events({ companyId }: { companyId: string }) {
         <p className="text-sm"><span className={`rounded px-1.5 text-xs ${KIND[open.kind]?.cls}`}>{KIND[open.kind]?.label}</span>{' '}
           {open.date}{open.end_date && open.end_date !== open.date ? ` al ${open.end_date}` : ''}{open.start_time ? ` · ${open.start_time}${open.end_time ? `–${open.end_time}` : ''}` : ''}</p>
         {open.notes && <p className="whitespace-pre-wrap text-sm">{open.notes}</p>}
+        <p className="text-xs text-slate-500">Para: {open.audience === 'dirigido' ? (openTargets.length ? openTargets.map(tName).join(', ') : 'personas elegidas') : 'todos'}</p>
         {canEdit && <button className="text-sm text-red-700" onClick={() => cancel(open)}>Cancelar evento</button>}
       </Modal>}
     </div>

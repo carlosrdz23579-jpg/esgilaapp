@@ -963,3 +963,25 @@ begin
   reset role;
   raise notice 'OK: abonos, cancelación autorizada y productos';
 end $$;
+
+-- 0045: eventos dirigidos y buzón
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        car uuid := (select id from public.companies where trade_name = 'ESGILA CAR');
+        c1 uuid := (select id from public.employees where full_name = 'Coach 1');
+        ev uuid; fb uuid; ok boolean;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.calendar_events (company_id, date, title, audience) values (car, app.today_mx(), 'Junta de coaches', 'dirigido') returning id into ev;
+  insert into public.event_targets (event_id, employee_id) values (ev, c1);
+  ok := false; begin insert into public.event_targets (event_id, employee_id, group_id) values (ev, c1, null), (ev, null, null); exception when others then ok := true; end;
+  if not ok then raise exception 'destino vacío'; end if;
+  insert into public.parent_feedback (company_id, kind, area, description, reporter_name) values (car, 'queja', 'instalaciones', 'El baño no tiene papel', 'Mamá de Sofi') returning id into fb;
+  insert into public.parent_feedback_updates (feedback_id, status, comment) values (fb, 'atendida', 'Se surtió');
+  if (select status from public.parent_feedback where id = fb) <> 'atendida' then raise exception 'no cambió el estado'; end if;
+  begin update public.parent_feedback set description = 'x' where id = fb; exception when others then null; end;
+  if (select description from public.parent_feedback where id = fb) = 'x' then raise exception 'se editó una queja'; end if;
+  reset role;
+  raise notice 'OK: eventos dirigidos y buzón';
+end $$;

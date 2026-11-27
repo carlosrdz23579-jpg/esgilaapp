@@ -27,7 +27,7 @@ export const PERM_MODULES: { key: string; label: string; actions: string[]; econ
   { key: 'students', label: 'Alumnas (Ver; Editar = pasar lista; Crear = notas internas; Configurar = importar de EVO y clases)', actions: ['view', 'edit', 'create', 'configure'], group: 'Alumnas' },
   { key: 'reports_shared', label: 'Reportes compartidos', actions: ['view', 'share'], group: 'Comunicación' },
   { key: 'announcements', label: 'Anuncios', actions: ['view', 'create', 'edit'], group: 'Comunicación' },
-  { key: 'complaints', label: 'Quejas y sugerencias', actions: ['view', 'edit'], group: 'Comunicación' },
+  { key: 'complaints', label: 'Quejas y sugerencias de papás (Crear = registrarlas; Ver = leerlas; Editar = dar seguimiento y cerrarlas)', actions: ['view', 'create', 'edit'], group: 'Comunicación' },
   { key: 'calendar', label: 'Calendario', actions: ['view', 'edit'], group: 'Comunicación' },
   { key: 'chat', label: 'Chats', actions: ['view', 'create'], group: 'Comunicación' },
   { key: 'users', label: 'Usuarios y permisos', actions: ['view', 'edit', 'configure'], group: 'Administración' },

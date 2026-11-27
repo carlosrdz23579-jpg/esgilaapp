@@ -47,7 +47,7 @@ function rosterFor(enr: Enr[], classId: string, date: string) {
 export default function Students() {
   const { companies, companyId, can } = useAuth();
   const canList = can('students', 'edit'), canNotes = can('students', 'create'), canCfg = can('students', 'configure');
-  const tabs = [canList && ['lista', 'Pase de lista'], ['alumnas', 'Alumnas'], ['clases', 'Clases'], canCfg && ['importar', 'Importar de EVO']]
+  const tabs = [canList && ['lista', 'Pase de lista'], ['semana', 'Asistencia semanal'], ['alumnas', 'Alumnas'], ['clases', 'Clases'], canCfg && ['importar', 'Importar de EVO']]
     .filter(Boolean) as [string, string][];
   const [tab, setTab] = usePersisted<string>('alumnas.tab', tabs[0][0]);
   const [classes, setClasses] = useState<Cls[]>([]); const [students, setStudents] = useState<Stu[]>([]);
@@ -81,6 +81,7 @@ export default function Students() {
       </div>
       {error && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       {current === 'lista' && <RollCall classes={classes} students={students} enr={enr} onOpen={setOpen} />}
+      {current === 'semana' && <WeekView classes={classes} students={students} enr={enr} onOpen={setOpen} />}
       {current === 'alumnas' && <StudentList classes={classes} students={students} enr={enr} onOpen={st => { setOpen(st); if (!students.some(x => x.id === st.id)) load(); }} />}
       {current === 'clases' && <ClassList classes={classes} enr={enr} canCfg={canCfg} onChanged={load} companies={companies} />}
       {current === 'importar' && <EvoImport onDone={() => { load(); setTab('alumnas'); }} />}
@@ -96,6 +97,7 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
   const [trials, setTrials] = useState<Trial[]>([]);
   useEffect(() => { supabase.from('trial_classes').select('id,student_id,class_id,date,attended').eq('date', date).is('cancelled_at', null).then(r => setTrials((r.data as Trial[]) ?? [])); }, [date]);
   const [times, setTimes] = useState<Record<string, string>>({}); const [adding, setAdding] = useState(''); const [busy, setBusy] = useState(false);
+  const [addTime, setAddTime] = useState('');
   const wd = dow(date);
   // Clases con alumnas ese día de la semana, la más cercana a la hora actual primero.
   const dayClasses = useMemo(() => classes.filter(c => c.is_active && (rosterFor(enr, c.id, date).some(e => e.weekdays.includes(wd)) || trials.some(t => t.class_id === c.id))), [classes, enr, date, wd, trials]);
@@ -159,7 +161,9 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
                         : !due.includes(s.id) && <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">no le tocaba</span>}</td>
                     <td className="px-3 py-2"><input type="time" className="rounded border px-2 py-1" value={t} onChange={e => setTimes({ ...times, [s.id]: e.target.value })} /></td>
                     <td className="px-3 py-2">{!r ? <span className="text-slate-400">sin marcar</span> : r.arrival
-                      ? <span className="text-green-700">✓ llegó {r.arrival}{r.arrival > cls.start_time ? <span className="ml-1 text-amber-700">(tarde)</span> : null}</span>
+                      ? <span className="text-green-700">✓ llegó {r.arrival}{r.arrival > cls.start_time ? <span className="ml-1 text-amber-700">(tarde)</span> : null}
+                          {(() => { const reg = new Date(r.created_at).toLocaleTimeString('en-GB', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' });
+                            return reg !== r.arrival ? <span className="block text-[11px] text-slate-400">registrado {date === todayMx() ? '' : `${new Date(r.created_at).toLocaleDateString('es-MX')} `}a las {reg}</span> : null; })()}</span>
                       : <span className="text-red-700">✗ faltó</span>}</td>
                     <td className="space-x-2 whitespace-nowrap px-3 py-2 text-right">
                       <button disabled={busy} className="rounded-lg bg-green-600 px-3 py-1 text-white disabled:opacity-50" onClick={() => mark([s.id], () => t)}>Llegó</button>
@@ -178,10 +182,68 @@ function RollCall({ classes, students, enr, onOpen }: { classes: Cls[]; students
           <select className={field} value={adding} onChange={e => setAdding(e.target.value)}>
             <option value="">+ Llegó alguien que no le tocaba…</option>
             {others.map(s => <option key={s.id} value={s.id}>{s.full_name}</option>)}</select>
-          {adding && <button disabled={busy} className="rounded-lg bg-brand px-3 py-2 text-sm text-white" onClick={() => { mark([adding], () => defTime); setAdding(''); }}>Agregar a las {defTime}</button>}
+          {adding && <><label className="flex items-center gap-1 text-sm">llegó a las<input type="time" className="rounded border px-2 py-1.5" value={addTime || defTime} onChange={e => setAddTime(e.target.value)} /></label>
+            <button disabled={busy} className="rounded-lg bg-brand px-3 py-2 text-sm text-white" onClick={() => { const t = addTime || defTime; mark([adding], () => t); setAdding(''); setAddTime(''); }}>Agregar</button></>}
         </div>)}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       <p className="text-xs text-slate-500">La hora sale con la hora actual de México; cámbiala antes de marcar si llegó a otra hora. Si te equivocas, vuelve a marcar: queda la última.</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- Asistencia semanal
+const mondayOf = (iso: string) => { const d = new Date(iso + 'T12:00:00Z'); const k = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - k); return d.toISOString().slice(0, 10); };
+const plusDays = (iso: string, n: number) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+function WeekView({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
+  const [mon, setMon] = useState(mondayOf(todayMx())); const [fClass, setFClass] = usePersisted('alumnas.semana.clase', '');
+  const [att, setAtt] = useState<Att[]>([]); const [trials, setTrials] = useState<Trial[]>([]);
+  const days = Array.from({ length: 6 }, (_, i) => plusDays(mon, i));
+  useEffect(() => {
+    Promise.all([supabase.from('student_attendance_latest').select('*').gte('date', days[0]).lte('date', days[5]),
+      supabase.from('trial_classes').select('id,student_id,class_id,date,attended').gte('date', days[0]).lte('date', days[5]).is('cancelled_at', null)])
+      .then(([a, t]) => { setAtt(((a.data as Att[]) ?? []).filter(x => !x.annulled)); setTrials((t.data as Trial[]) ?? []); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mon]);
+  const sById = new Map(students.map(x => [x.id, x]));
+  const shown = classes.filter(c => c.is_active && (!fClass || c.id === fClass)).map(c => {
+    const due = (d: string) => new Set([...rosterFor(enr, c.id, d).filter(e => e.weekdays.includes(dow(d))).map(e => e.student_id), ...trials.filter(t => t.class_id === c.id && t.date === d).map(t => t.student_id)]);
+    const ids = new Set<string>(); days.forEach(d => { due(d).forEach(x => ids.add(x)); att.filter(a => a.class_id === c.id && a.date === d).forEach(a => ids.add(a.student_id)); });
+    return { c, due, list: [...ids].map(id => sById.get(id)).filter(Boolean).sort((a, b) => a!.full_name.localeCompare(b!.full_name)) as Stu[] };
+  }).filter(x => x.list.length);
+  const today = todayMx();
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="rounded border bg-white px-2 py-1" onClick={() => setMon(plusDays(mon, -7))}>‹</button>
+        <b className="w-56 text-center">Semana del {new Date(mon + 'T12:00:00').toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })} al {new Date(days[5] + 'T12:00:00').toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</b>
+        <button className="rounded border bg-white px-2 py-1" onClick={() => setMon(plusDays(mon, 7))}>›</button>
+        <button className="text-sm text-brand" onClick={() => setMon(mondayOf(today))}>Esta semana</button>
+        <select className={field} value={fClass} onChange={e => setFClass(e.target.value)}><option value="">Todas las clases</option>
+          {classes.filter(c => c.is_active).map(c => <option key={c.id} value={c.id}>{c.activity} · {c.start_time}</option>)}</select>
+        <button className="ml-auto rounded-lg border bg-white px-3 py-2 text-sm print:hidden" onClick={() => window.print()}>Imprimir</button>
+      </div>
+      {shown.map(({ c, due, list }) => (
+        <div key={c.id} className="overflow-x-auto rounded-xl bg-white shadow-sm">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="px-3 py-2 text-left text-sm text-slate-800">{c.activity} · {c.start_time}–{c.end_time}</th>
+              {days.map(d => <th key={d} className={`px-2 py-2 ${d === today ? 'text-brand' : ''}`}>{WD[dow(d)]} {+d.slice(8)}</th>)}<th className="px-2 py-2">Vino</th></tr></thead>
+            <tbody>{list.map(s => { let came = 0, exp = 0; return (
+              <tr key={s.id} className="border-t">
+                <td className="px-3 py-1.5"><button className="text-left hover:text-brand" onClick={() => onOpen(s)}>{s.full_name}</button>
+                  {s.kind === 'prospecto' && <span className="ml-1 text-[10px] text-purple-700">muestra</span>}</td>
+                {days.map(d => { const a = att.find(x => x.student_id === s.id && x.class_id === c.id && x.date === d); const toca = due(d).has(s.id);
+                  if (toca) exp++; if (a?.arrival) came++;
+                  return <td key={d} className="px-2 py-1.5 text-center text-xs">{a ? (a.arrival ? <span className={`rounded px-1 ${toca ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`} title={toca ? '' : 'no le tocaba'}>✓ {a.arrival}</span>
+                    : <span className="rounded bg-red-100 px-1 text-red-700">✗</span>) : toca ? <span className="text-slate-300" title={d > today ? 'le toca' : 'sin marcar'}>{d > today ? '○' : '·'}</span> : ''}</td>; })}
+                <td className="px-2 py-1.5 text-center text-xs">{came}/{exp}</td>
+              </tr>); })}
+              <tr className="border-t bg-slate-50 text-xs"><td className="px-3 py-1">Llegaron / les tocaba</td>{days.map(d => { const ds = due(d);
+                return <td key={d} className="px-2 py-1 text-center">{att.filter(a => a.class_id === c.id && a.date === d && a.arrival).length}/{ds.size}</td>; })}<td /></tr>
+            </tbody>
+          </table>
+        </div>))}
+      {!shown.length && <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">No hay clases con alumnas esa semana.</p>}
+      <p className="text-xs text-slate-500">✓ verde: vino · ✓ ámbar: vino un día que no le tocaba · ✗: faltó · punto gris: le tocaba y no se marcó · círculo: le toca (día que aún no llega).</p>
     </div>
   );
 }
