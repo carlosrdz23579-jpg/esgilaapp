@@ -985,3 +985,18 @@ begin
   reset role;
   raise notice 'OK: eventos dirigidos y buzón';
 end $$;
+
+-- 0047: perfil propio
+do $$
+declare adm uuid := (select id from public.app_users where email = 'carlosrdz23579@gmail.com'); r app.user_role;
+begin
+  select role into r from public.app_users where id = adm;
+  perform set_config('request.jwt.claim.sub', adm::text, true);
+  set local role authenticated;
+  perform public.set_my_profile('Carlos R.', null, '{"theme":"oscuro","fontSize":"grande"}');
+  perform public.set_my_profile(null, null, '{"accent":"violeta"}');
+  reset role;
+  if (select ui_prefs->>'theme' from public.app_users where id = adm) <> 'oscuro' or (select ui_prefs->>'accent' from public.app_users where id = adm) <> 'violeta' then raise exception 'preferencias'; end if;
+  if (select role from public.app_users where id = adm) <> r then raise exception 'cambió el rol'; end if;
+  raise notice 'OK: perfil y apariencia';
+end $$;

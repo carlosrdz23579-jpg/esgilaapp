@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
-import { Modal } from './ui';
+import { Modal, ModuleTabs } from './ui';
 
 interface Ind { id: string; company_id: string; name: string; description: string | null; kind: 'si_no' | 'escala';
   department_id: string | null; sort: number; is_active: boolean }
@@ -62,10 +62,7 @@ export default function FollowUp() {
   if (!current) return <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">No tienes seguimiento asignado.</p>;
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-1 border-b">
-        {tabs.map(([k, l]) => <button key={k} onClick={() => setTab(k)}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm ${current === k ? 'border-brand font-semibold text-brand' : 'border-transparent text-slate-500'}`}>{l}</button>)}
-      </div>
+      <ModuleTabs id="seguimiento" tabs={tabs.filter(t => t[0] !== 'catalogo')} settings={tabs.filter(t => t[0] === 'catalogo')} value={current} onChange={setTab} />
       {error && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       {current === 'dia' && <DayGrid inds={inds} emps={emps} depts={depts} onOpen={setOpen} />}
       {current === 'mes' && <MonthSummary inds={inds} emps={emps} depts={depts} onOpen={setOpen} />}

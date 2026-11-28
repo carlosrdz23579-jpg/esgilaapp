@@ -1,10 +1,93 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-:root { --brand: 37 99 235; }
 
-/* Al imprimir (sobres de efectivo) solo sale el contenido */
+/* =====================================================================
+   Apariencia. Color de acento (--brand) y tema los aplica lib/prefs.tsx
+   según lo que cada quien elija en su perfil.
+   ===================================================================== */
+:root {
+  --brand: 147 51 234;
+  --bg: 246 245 251;          /* fondo de página */
+  --surface: 255 255 255;     /* tarjetas */
+  --ink: 30 27 46;            /* texto principal */
+  color-scheme: light;
+}
+html { font-size: 15px; }
+html[data-font='chica'] { font-size: 13.5px; }
+html[data-font='grande'] { font-size: 16.5px; }
+html[data-font='muy_grande'] { font-size: 18px; }
+
+@layer base {
+  body {
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: rgb(var(--bg)); color: rgb(var(--ink));
+    -webkit-font-smoothing: antialiased; font-feature-settings: 'cv11', 'ss01';
+  }
+  h1, h2, h3, h4 { letter-spacing: -0.01em; }
+  ::selection { background: rgb(var(--brand) / 0.2); }
+  :focus-visible { outline: 2px solid rgb(var(--brand) / 0.6); outline-offset: 2px; }
+  input, select, textarea { background-color: rgb(var(--surface)); }
+}
+
+/* Tarjetas y tablas un poco más suaves y con aire */
+.shadow-sm { box-shadow: 0 1px 2px rgb(16 12 40 / 0.04), 0 2px 8px rgb(16 12 40 / 0.04) !important; }
+.rounded-xl.bg-white, .rounded-2xl.bg-white { border: 1px solid rgb(16 12 40 / 0.06); }
+thead.bg-slate-50 th { font-weight: 600; letter-spacing: 0.02em; }
+tbody tr { transition: background-color .12s; }
+
+/* Barras de desplazamiento discretas */
+* { scrollbar-width: thin; scrollbar-color: rgb(120 113 150 / .35) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: rgb(120 113 150 / .35); border-radius: 9px; border: 2px solid transparent; background-clip: content-box; }
+
+/* =====================================================================
+   Modo oscuro: se reinterpretan las clases que usa toda la app, para no
+   tener que tocar cada pantalla.
+   ===================================================================== */
+.dark { --bg: 17 16 26; --surface: 29 27 42; --ink: 228 226 240; color-scheme: dark; }
+@layer base {
+  .dark *, .dark ::before, .dark ::after { border-color: rgb(255 255 255 / 0.09); }
+}
+.dark .bg-white { background-color: rgb(var(--surface)); }
+.dark .rounded-xl.bg-white, .dark .rounded-2xl.bg-white { border-color: rgb(255 255 255 / 0.06); }
+.dark .bg-slate-50, .dark .bg-gray-50 { background-color: rgb(255 255 255 / 0.035); }
+.dark .bg-slate-50\/60, .dark .bg-slate-50\/50 { background-color: rgb(255 255 255 / 0.03); }
+.dark .bg-slate-100 { background-color: rgb(255 255 255 / 0.07); }
+.dark .bg-slate-200 { background-color: rgb(255 255 255 / 0.12); }
+.dark .hover\:bg-slate-50:hover, .dark .hover\:bg-slate-100:hover { background-color: rgb(255 255 255 / 0.06); }
+.dark .text-slate-900, .dark .text-slate-800 { color: rgb(var(--ink)); }
+.dark .text-slate-700 { color: rgb(208 205 225); }
+.dark .text-slate-600 { color: rgb(180 176 200); }
+.dark .text-slate-500 { color: rgb(150 146 172); }
+.dark .text-slate-400 { color: rgb(120 116 142); }
+.dark .text-slate-300 { color: rgb(90 86 110); }
+.dark .border-slate-200, .dark .border-slate-300 { border-color: rgb(255 255 255 / 0.12); }
+.dark .bg-black\/40, .dark .bg-black\/30 { background-color: rgb(0 0 0 / 0.6); }
+.dark .shadow-sm, .dark .shadow, .dark .shadow-xl { box-shadow: 0 1px 2px rgb(0 0 0 / .4) !important; }
+/* tintes de colores (avisos, insignias) */
+.dark .bg-red-50 { background-color: rgb(239 68 68 / 0.12); }      .dark .bg-red-100 { background-color: rgb(239 68 68 / 0.2); }
+.dark .bg-green-50 { background-color: rgb(34 197 94 / 0.1); }     .dark .bg-green-100 { background-color: rgb(34 197 94 / 0.18); }
+.dark .bg-amber-50 { background-color: rgb(245 158 11 / 0.1); }    .dark .bg-amber-100 { background-color: rgb(245 158 11 / 0.2); }
+.dark .bg-sky-50 { background-color: rgb(14 165 233 / 0.1); }      .dark .bg-sky-100 { background-color: rgb(14 165 233 / 0.2); }
+.dark .bg-blue-100 { background-color: rgb(59 130 246 / 0.2); }    .dark .bg-emerald-100 { background-color: rgb(16 185 129 / 0.2); }
+.dark .bg-purple-50 { background-color: rgb(168 85 247 / 0.1); }   .dark .bg-purple-100 { background-color: rgb(168 85 247 / 0.2); }
+.dark .bg-green-50\/50, .dark .bg-green-50\/40 { background-color: rgb(34 197 94 / 0.06); }
+.dark .bg-red-50\/50, .dark .bg-amber-50\/50, .dark .bg-amber-50\/40, .dark .bg-purple-50\/40 { background-color: rgb(245 158 11 / 0.06); }
+.dark .text-red-700, .dark .text-red-600 { color: rgb(252 129 129); }
+.dark .text-green-700, .dark .text-green-800 { color: rgb(110 231 160); }
+.dark .text-amber-700, .dark .text-amber-800 { color: rgb(252 200 100); }
+.dark .text-sky-700, .dark .text-blue-700 { color: rgb(125 200 255); }
+.dark .text-purple-700, .dark .text-purple-800 { color: rgb(216 180 254); }
+.dark .text-emerald-700 { color: rgb(110 231 183); }
+.dark .border-red-200, .dark .border-red-300 { border-color: rgb(239 68 68 / 0.35); }
+.dark .border-amber-200, .dark .border-amber-300 { border-color: rgb(245 158 11 / 0.35); }
+.dark .border-purple-200 { border-color: rgb(168 85 247 / 0.35); }
+.dark img { opacity: .95; }
+
+/* Al imprimir (sobres de efectivo, recibos, reportes) sólo sale el contenido, en claro */
 @media print {
-  aside, header, nav { display: none !important; }
+  aside, header, nav, .no-print { display: none !important; }
   main { padding: 0 !important; }
+  html.dark { --bg: 255 255 255; --surface: 255 255 255; --ink: 0 0 0; }
 }

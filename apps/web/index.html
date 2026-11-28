@@ -1,11 +1,23 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-font="normal">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Administración empresarial</title>
+    <meta name="theme-color" content="#1e1b2e" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>ESGILA · Administración</title>
+    <script>
+      // aplica tema y tamaño de letra antes de pintar (sin parpadeo)
+      try {
+        var p = JSON.parse(localStorage.getItem('esgila:ui') || '{}'); var d = document.documentElement;
+        var dark = p.theme === 'oscuro' || (p.theme === 'sistema' && matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) d.classList.add('dark'); if (p.fontSize) d.dataset.font = p.fontSize;
+      } catch (e) {}
+    </script>
   </head>
-  <body class="bg-slate-50 text-slate-800">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

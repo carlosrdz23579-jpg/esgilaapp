@@ -19,16 +19,18 @@ export default function Login() {
     setBusy(false);
   }
 
-  const input = 'w-full rounded-lg border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand';
+  const input = 'w-full rounded-xl border border-slate-200 px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand';
   return (
-    <div className="min-h-screen grid place-items-center p-4">
-      <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-6 shadow">
-        <h1 className="text-xl font-semibold">{mode === 'login' ? 'Iniciar sesión' : 'Solicitar acceso'}</h1>
+    <div className="grid min-h-screen place-items-center bg-gradient-to-br from-[#1e1b2e] via-[#2a2245] to-[rgb(var(--brand))] p-4">
+      <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-3xl bg-white p-7 shadow-2xl">
+        <div className="flex items-center gap-3"><div className="grid h-11 w-11 place-items-center rounded-2xl bg-brand text-xl font-bold text-white shadow-lg shadow-brand/30">E</div>
+          <div><p className="text-lg font-semibold leading-tight">ESGILA</p><p className="text-xs text-slate-500">Escuela de Gimnasia de La Laguna</p></div></div>
+        <h1 className="pt-2 text-xl font-semibold">{mode === 'login' ? 'Hola de nuevo' : 'Solicitar acceso'}</h1>
         {mode === 'signup' && <input className={input} placeholder="Nombre completo" value={name} onChange={e => setName(e.target.value)} required />}
         <input className={input} type="email" placeholder="Correo" value={email} onChange={e => setEmail(e.target.value)} required />
         <input className={input} type="password" placeholder="Contraseña (mínimo 8)" minLength={8} value={password} onChange={e => setPassword(e.target.value)} required />
         {msg && <p className="text-sm text-slate-600">{msg}</p>}
-        <button disabled={busy} className="w-full rounded-lg bg-brand py-2 font-medium text-white disabled:opacity-60">
+        <button disabled={busy} className="w-full rounded-xl bg-brand py-2.5 font-semibold text-white shadow-lg shadow-brand/25 transition hover:brightness-110 disabled:opacity-60">
           {mode === 'login' ? 'Entrar' : 'Enviar solicitud'}
         </button>
         <button type="button" className="w-full text-sm text-brand" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setMsg(null); }}>

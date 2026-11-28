@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
 import { formatMXN } from '../lib/money';
 import { useGroupLoads, loadLabel } from '../lib/groupLoad';
+import { ModuleTabs } from './ui';
 
 const field = 'rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-3 py-2 text-sm text-white disabled:opacity-50';
@@ -28,17 +29,14 @@ export default function Billing() {
   const { companies, can } = useAuth();
   const canCfg = can('billing', 'configure');
   const [co, setCo] = useCompany();
-  const tabs: [string, string][] = [['tabla', 'Tabla de precios'], ['planes', 'Planes por disciplina'], ['grupos', 'Grupos y cupo'], ['productos', 'Productos'], ['reglas', 'Reglas, anualidad y formas de pago']];
+  const tabs: [string, string][] = [['tabla', 'Tabla de precios'], ['planes', 'Planes por disciplina'], ['grupos', 'Grupos y cupo'], ['productos', 'Productos']];
+  const settings: [string, string][] = [['reglas', 'Reglas de cobro, anualidad y formas de pago']];
   const [tab, setTab] = usePersisted('cobranza.tab', 'planes');
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-1 border-b">
-        {tabs.map(([k, l]) => <button key={k} onClick={() => setTab(k)}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === k ? 'border-brand font-semibold text-brand' : 'border-transparent text-slate-500'}`}>{l}</button>)}
-        <select className="ml-auto rounded border px-2 py-1 text-sm" value={co} onChange={e => setCo(e.target.value)}>
-          {companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select>
-      </div>
-      <p className="text-xs text-slate-500">Los planes se asignan desde la ficha de cada alumna (Alumnas → clic en su nombre). Los cobros y la caja están en el menú Caja.</p>
+      <ModuleTabs id="cobranza" tabs={tabs} settings={settings} value={tab} onChange={setTab}
+        right={<select className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm" value={co} onChange={e => setCo(e.target.value)}>
+          {companies.map(c => <option key={c.id} value={c.id}>{c.trade_name}</option>)}</select>} />
       {co && tab === 'tabla' && <PriceTable co={co} canCfg={canCfg} />}
       {co && tab === 'planes' && <Plans co={co} canCfg={canCfg} />}
       {co && tab === 'grupos' && <Groups co={co} canCfg={canCfg} />}

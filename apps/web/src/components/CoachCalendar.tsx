@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import { usePersisted } from '../lib/usePersisted';
-import { Modal, TimeSelect } from './ui';
+import { Modal, TimeSelect, ModuleTabs } from './ui';
 import Warmup from './Warmup';
 
 const field = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
@@ -64,9 +64,8 @@ export default function CoachCalendar() {
     ['planeaciones', 'Planeaciones y mis apuntes'], ...(can('planning', 'view') ? [['revision', 'Revisión de maestros']] : [])] as const;
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">{tabs.map(([k, l]) => (
-        <button key={k} onClick={() => setTab(k as typeof tab)} className={`rounded-lg px-3 py-1.5 text-sm ${tab === k ? 'bg-brand text-white' : 'bg-white shadow-sm'}`}>{l}</button>))}
-        <span className="ml-auto self-center text-sm text-slate-500">{companies.find(c => c.id === co)?.trade_name}</span></div>
+      <ModuleTabs id="calendario" tabs={tabs.map(([k, l]) => [k, l] as [string, string])} value={tab} onChange={k => setTab(k as typeof tab)}
+        right={<span className="text-sm text-slate-500">{companies.find(c => c.id === co)?.trade_name}</span>} />
       {tab === 'eventos' && <Events companyId={co} />}
       {tab === 'calendario' && <Calendar companyId={co} />}
       {tab === 'calentamiento' && <Warmup />}

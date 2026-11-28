@@ -7,6 +7,7 @@ import { parseEvoSheet, type EvoReport } from '@domain/evo';
 import StudentPlans from './StudentPlans';
 import StudentProfile, { Photo, uploadPhoto, GENDERS, SOURCES, type StuFull } from './StudentProfile';
 import { useGroupLoads, loadLabel, dayFull } from '../lib/groupLoad';
+import { ModuleTabs } from './ui';
 
 interface Cls { id: string; company_id: string; activity: string; start_time: string; end_time: string; duration_override_min: number | null;
   detected_min: number; duration_min: number; is_active: boolean }
@@ -47,7 +48,8 @@ function rosterFor(enr: Enr[], classId: string, date: string) {
 export default function Students() {
   const { companies, companyId, can } = useAuth();
   const canList = can('students', 'edit'), canNotes = can('students', 'create'), canCfg = can('students', 'configure');
-  const tabs = [canList && ['lista', 'Pase de lista'], ['semana', 'Asistencia semanal'], ['alumnas', 'Alumnas'], ['clases', 'Clases'], canCfg && ['importar', 'Importar de EVO']]
+  const settings: [string, string][] = [['clases', 'Clases y duración'], ...(canCfg ? [['importar', 'Importar de EVO'] as [string, string]] : [])];
+  const tabs = [canList && ['lista', 'Pase de lista'], ['semana', 'Asistencia semanal'], ['alumnas', 'Alumnas'], ...settings]
     .filter(Boolean) as [string, string][];
   const [tab, setTab] = usePersisted<string>('alumnas.tab', tabs[0][0]);
   const [classes, setClasses] = useState<Cls[]>([]); const [students, setStudents] = useState<Stu[]>([]);
@@ -75,10 +77,7 @@ export default function Students() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-1 border-b">
-        {tabs.map(([k, l]) => <button key={k} onClick={() => setTab(k)}
-          className={`-mb-px border-b-2 px-3 py-2 text-sm ${current === k ? 'border-brand font-semibold text-brand' : 'border-transparent text-slate-500'}`}>{l}</button>)}
-      </div>
+      <ModuleTabs id="alumnas" tabs={tabs.filter(t => !settings.some(x => x[0] === t[0]))} settings={settings} value={current} onChange={setTab} />
       {error && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       {current === 'lista' && <RollCall classes={classes} students={students} enr={enr} onOpen={setOpen} />}
       {current === 'semana' && <WeekView classes={classes} students={students} enr={enr} onOpen={setOpen} />}

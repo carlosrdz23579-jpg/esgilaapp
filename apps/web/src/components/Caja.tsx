@@ -6,6 +6,7 @@ import { formatMXN } from '../lib/money';
 import { computeOwed, todayMx, monthName, type OwedItem } from '../lib/owed';
 import { toCents } from './Billing';
 import { Photo } from './StudentProfile';
+import { ModuleTabs } from './ui';
 
 const field = 'rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-4 py-2 text-sm text-white disabled:opacity-50';
@@ -63,8 +64,7 @@ export default function Caja() {
       </div>
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
       {closing && session && <CloseCash session={session} methods={methods} onDone={() => { setClosing(false); loadSession(); }} />}
-      <div className="flex flex-wrap gap-1 border-b">{tabs.map(([k, l]) => <button key={k} onClick={() => setTab(k)}
-        className={`-mb-px border-b-2 px-3 py-2 text-sm ${current === k ? 'border-brand font-semibold text-brand' : 'border-transparent text-slate-500'}`}>{l}</button>)}</div>
+      <ModuleTabs id="caja" tabs={tabs} value={current} onChange={setTab} />
       {co && current === 'cobrar' && (session ? <Cobrar co={co} methods={methods} /> : <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-slate-500">Abre tu caja para cobrar.</p>)}
       {co && current === 'hoy' && <Today co={co} methods={methods} />}
       {co && current === 'adeudos' && <Debts co={co} />}
