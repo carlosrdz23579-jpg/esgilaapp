@@ -7,6 +7,7 @@ import { computeOwed, todayMx, monthName, type OwedItem } from '../lib/owed';
 import { toCents } from './Billing';
 import { Photo } from './StudentProfile';
 import { ModuleTabs } from './ui';
+import { takeNavData } from '../lib/nav';
 
 const field = 'rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand';
 const btn = 'rounded-lg bg-brand px-4 py-2 text-sm text-white disabled:opacity-50';
@@ -88,7 +89,10 @@ function Cobrar({ co, methods }: { co: string; methods: Method[] }) {
   useEffect(() => {
     Promise.all([supabase.from('students').select('id,full_name,family_id,photo_path,kind,is_active').eq('company_id', co).eq('is_active', true).order('full_name').limit(3000),
       supabase.from('products').select('id,name,category,price_cents').eq('company_id', co).eq('is_active', true).order('category').order('name')])
-      .then(([s, p]) => { setStudents((s.data as Stu[]) ?? []); setProducts((p.data as Prod[]) ?? []); });
+      .then(([s, p]) => {
+        const list = (s.data as Stu[]) ?? []; setStudents(list); setProducts((p.data as Prod[]) ?? []);
+        const pre = takeNavData('caja.preselect'); const st = pre ? list.find(x => x.id === pre) : null; if (st) setWho(st);   // "Nueva venta" desde la ficha
+      });
   }, [co]);
   const reset = () => { setLeaveDebt(false); setBals([]); setWho(null); setCounter(false); setCustomer(''); setOwed([]); setSel(new Set()); setCart([]); setOthers([]); setPays([]); setNote(''); setFamily([]); setCredit(0); setNext(false); };
 

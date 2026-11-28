@@ -8,7 +8,7 @@ const todayMx = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Americ
 export interface StuFull { id: string; company_id: string; evo_id: string | null; full_name: string; phone: string | null; birth_date: string | null;
   enrolled_on: string | null; is_active: boolean; email?: string | null; gender?: string | null; nickname?: string | null; curp?: string | null;
   guardian_name?: string | null; guardian_phone?: string | null; notes?: string | null; source?: string | null; photo_path?: string | null;
-  kind?: 'alumna' | 'prospecto'; became_student_on?: string | null }
+  kind?: 'alumna' | 'prospecto'; became_student_on?: string | null; withdrawn_on?: string | null; withdrawal_reason?: string | null }
 
 export const GENDERS: [string, string][] = [['femenino', 'Femenino'], ['masculino', 'Masculino'], ['otro', 'Otro']];
 export const SOURCES = ['Recomendación', 'Redes sociales', 'Pasó por la escuela', 'Hermana inscrita', 'Evento / exhibición', 'Otro'];

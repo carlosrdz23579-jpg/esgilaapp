@@ -1000,3 +1000,25 @@ begin
   if (select role from public.app_users where id = adm) <> r then raise exception 'cambió el rol'; end if;
   raise notice 'OK: perfil y apariencia';
 end $$;
+
+-- 0048: bajas
+do $$
+declare dir uuid := (select id from public.app_users where email = 'aldost228@gmail.com');
+        vin uuid := (select id from public.companies where trade_name = 'ESGILA Viñedos');
+        pl uuid := (select id from public.plans where company_id = vin and name = '2 horas por semana' limit 1);
+        st uuid; sub uuid; fut uuid; m date := date_trunc('month', app.today_mx())::date;
+begin
+  perform set_config('request.jwt.claim.sub', dir::text, true);
+  set local role authenticated;
+  insert into public.students (company_id, full_name) values (vin, 'Se va') returning id into st;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, st, m) returning id into sub;
+  insert into public.subscriptions (company_id, plan_id, student_id, start_month) values (vin, pl, st, (m + interval '2 months')::date) returning id into fut;
+  perform public.withdraw_student(st, 'Cambio de domicilio', 'Se mudan a Saltillo', m);
+  if (select is_active from public.students where id = st) then raise exception 'sigue activa'; end if;
+  if (select end_month from public.subscriptions where id = sub) <> m then raise exception 'no terminó el plan'; end if;
+  if (select cancelled_at from public.subscriptions where id = fut) is null then raise exception 'no canceló el plan futuro'; end if;
+  perform public.reactivate_student(st, null);
+  if (select count(*) from public.student_status_log where student_id = st) <> 2 then raise exception 'historial'; end if;
+  reset role;
+  raise notice 'OK: bajas';
+end $$;

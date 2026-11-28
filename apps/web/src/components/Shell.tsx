@@ -1,5 +1,5 @@
 declare const __BUILD__: string;
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePersisted } from '../lib/usePersisted';
 import { useAuth } from '../lib/auth';
 import { usePrefs } from '../lib/prefs';
@@ -50,6 +50,7 @@ export default function Shell() {
   const [active, setActive] = usePersisted<string>('modulo', 'inicio');
   if (active === 'coaches' || active === 'calentamiento') setActive('calendario');
   const [open, setOpen] = useState(false); const [gear, setGear] = useState(false); const [profile, setProfile] = useState(false);
+  useEffect(() => { const h = (e: Event) => setActive((e as CustomEvent<string>).detail); window.addEventListener('esgila:go', h); return () => window.removeEventListener('esgila:go', h); }, [setActive]);
   const all = MODULES.filter(m => m.visible(auth));
   const nav = all.filter(m => !m.admin && !prefs.menuHidden.includes(m.key));
   const adminMods = all.filter(m => m.admin);

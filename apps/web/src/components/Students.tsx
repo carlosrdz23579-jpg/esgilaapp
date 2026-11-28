@@ -6,6 +6,10 @@ import { Modal } from './ui';
 import { parseEvoSheet, type EvoReport } from '@domain/evo';
 import StudentPlans from './StudentPlans';
 import StudentProfile, { Photo, uploadPhoto, GENDERS, SOURCES, type StuFull } from './StudentProfile';
+import StudentAccount, { studentBalance, type Balance } from './StudentAccount';
+import { goTo } from '../lib/nav';
+import { formatMXN } from '../lib/money';
+import { monthName, computeOwed } from '../lib/owed';
 import { useGroupLoads, loadLabel, dayFull } from '../lib/groupLoad';
 import { ModuleTabs } from './ui';
 
@@ -415,40 +419,88 @@ function NewStudent({ onCreated }: { onCreated: (s: Stu) => void }) {
   );
 }
 
+type ListKind = 'activas' | 'deudoras' | 'cumplidoras' | 'inactivas' | 'prospectos';
 function StudentList({ classes, students, enr, onOpen }: { classes: Cls[]; students: Stu[]; enr: Enr[]; onOpen: (s: Stu) => void }) {
   const { can } = useAuth(); const canAdd = can('students', 'configure') || can('billing', 'edit');
-  const [adding, setAdding] = useState(false); const [kind, setKind] = usePersisted<'alumna' | 'prospecto'>('alumnas.tipo', 'alumna');
-  const [q, setQ] = useState(''); const [fClass, setFClass] = useState(''); const [onlyActive, setOnlyActive] = useState(true);
+  const canMoney = ['view', 'edit', 'configure'].some(x => can('billing', x)) || ['view', 'edit'].some(x => can('cashbox', x));
+  const [adding, setAdding] = useState(false); const [kind, setKind] = usePersisted<ListKind>('alumnas.lista', 'activas');
+  const [q, setQ] = useState(''); const [fClass, setFClass] = useState('');
+  const [debts, setDebts] = useState<Record<string, number> | null>(null); const [loadingDebts, setLoadingDebts] = useState(false);
+  const [plans, setPlans] = useState<Record<string, string>>({});
   const today = todayMx();
   const cur = useMemo(() => classes.flatMap(c => rosterFor(enr, c.id, today).map(e => ({ ...e, c }))), [classes, enr, today]);
-  const rows = students.filter(s => (s.kind ?? 'alumna') === kind && (!onlyActive || s.is_active) && (!q || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.evo_id === q)
-    && (!fClass || cur.some(e => e.student_id === s.id && e.class_id === fClass)));
+  const active = students.filter(s => s.is_active && (s.kind ?? 'alumna') === 'alumna');
+  // plan vigente de cada alumna (para "cumplidoras": al corriente y con plan)
+  useEffect(() => {
+    supabase.from('subscriptions').select('student_id,start_month,end_month,plans(discipline,name)').is('cancelled_at', null).not('student_id', 'is', null).then(r => {
+      const ym = today.slice(0, 7); const m: Record<string, string> = {};
+      for (const x of (r.data ?? []) as unknown as { student_id: string; start_month: string; end_month: string | null; plans: { discipline: string; name: string } | null }[])
+        if (x.start_month.slice(0, 7) <= ym && (!x.end_month || x.end_month.slice(0, 7) >= ym)) m[x.student_id] = x.plans ? `${x.plans.discipline} · ${x.plans.name}` : 'Plan';
+      setPlans(m);
+    });
+  }, [students, today]);
+  // adeudos: se calculan al abrir Deudoras o Cumplidoras (con recargos del día)
+  useEffect(() => {
+    if (!canMoney || debts || !['deudoras', 'cumplidoras'].includes(kind) || !active.length) return;
+    setLoadingDebts(true);
+    (async () => {
+      const out: Record<string, number> = {};
+      for (const co of [...new Set(active.map(s => s.company_id))]) {
+        const ids = active.filter(s => s.company_id === co).map(s => s.id);
+        const r = await computeOwed({ company: co, studentIds: ids });
+        for (const it of r.items) out[it.studentId] = (out[it.studentId] ?? 0) + it.amount;
+      }
+      const b = await supabase.from('sale_balances').select('student_id,balance_cents').gt('balance_cents', 0);
+      for (const x of b.data ?? []) if (x.student_id) out[x.student_id] = (out[x.student_id] ?? 0) + Number(x.balance_cents);
+      setDebts(out); setLoadingDebts(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, canMoney, students]);
+  const owes = (id: string) => (debts?.[id] ?? 0) > 0;
+  const base = kind === 'inactivas' ? students.filter(s => !s.is_active && (s.kind ?? 'alumna') === 'alumna')
+    : kind === 'prospectos' ? students.filter(s => s.kind === 'prospecto' && s.is_active)
+    : kind === 'deudoras' ? active.filter(s => owes(s.id))
+    : kind === 'cumplidoras' ? active.filter(s => plans[s.id] && debts && !owes(s.id)) : active;
+  const rows = base.filter(s => (!q || s.full_name.toLowerCase().includes(q.toLowerCase()) || s.evo_id === q) && (!fClass || cur.some(e => e.student_id === s.id && e.class_id === fClass)))
+    .sort((a, b) => kind === 'deudoras' ? (debts?.[b.id] ?? 0) - (debts?.[a.id] ?? 0) : a.full_name.localeCompare(b.full_name));
+  const lists: [ListKind, string, number | null][] = [['activas', 'Activas', active.length],
+    ...(canMoney ? [['deudoras', 'Deudoras', debts ? active.filter(s => owes(s.id)).length : null] as [ListKind, string, number | null],
+      ['cumplidoras', 'Al corriente', debts ? active.filter(s => plans[s.id] && !owes(s.id)).length : null] as [ListKind, string, number | null]] : []),
+    ['inactivas', 'Bajas', students.filter(s => !s.is_active && (s.kind ?? 'alumna') === 'alumna').length], ['prospectos', 'Prospectos', students.filter(s => s.kind === 'prospecto' && s.is_active).length]];
+  const total = rows.reduce((n, s) => n + (debts?.[s.id] ?? 0), 0);
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex overflow-hidden rounded-lg border text-sm">{(['alumna', 'prospecto'] as const).map(k =>
-          <button key={k} onClick={() => setKind(k)} className={`px-3 py-2 ${kind === k ? 'bg-brand text-white' : 'bg-white'}`}>
-            {k === 'alumna' ? 'Alumnas' : 'Prospectos'} ({students.filter(x => (x.kind ?? 'alumna') === k && x.is_active).length})</button>)}</div>
-        <input className={field} placeholder="Buscar por nombre o ID de EVO" value={q} onChange={e => setQ(e.target.value)} />
+        <div className="flex flex-wrap gap-1 rounded-2xl bg-slate-100 p-1 text-sm">{lists.map(([k, l, n]) =>
+          <button key={k} onClick={() => setKind(k)} className={`rounded-xl px-3 py-1.5 ${kind === k ? `bg-white font-semibold shadow-sm ${k === 'deudoras' ? 'text-red-700' : k === 'cumplidoras' ? 'text-green-700' : 'text-brand'}` : 'text-slate-600'}`}>
+            {l}{n !== null && <span className="ml-1 text-xs opacity-70">{n}</span>}</button>)}</div>
+        {canAdd && !adding && <button className="ml-auto rounded-xl bg-brand px-3 py-2 text-sm font-medium text-white shadow-sm" onClick={() => setAdding(true)}>+ Nueva alumna</button>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={`${field} w-64`} placeholder="Buscar por nombre o ID de EVO" value={q} onChange={e => setQ(e.target.value)} />
         <select className={field} value={fClass} onChange={e => setFClass(e.target.value)}><option value="">Todas las clases</option>
           {classes.map(c => <option key={c.id} value={c.id}>{c.activity} · {c.start_time}</option>)}</select>
-        <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} />Sólo activas</label>
-        {canAdd && !adding && <button className="ml-auto rounded-lg bg-brand px-3 py-2 text-sm text-white" onClick={() => setAdding(true)}>+ Nueva alumna</button>}
-        <span className="text-sm text-slate-500">{rows.length} alumnas</span>
+        <span className="text-sm text-slate-500">{rows.length} {kind === 'prospectos' ? 'prospectos' : 'alumnas'}{kind === 'deudoras' && debts ? ` · deben ${formatMXN(total)} hoy` : ''}</span>
+        {['deudoras', 'cumplidoras'].includes(kind) && <button className="ml-auto text-xs text-brand" onClick={() => setDebts(null)}>Recalcular</button>}
       </div>
       {adding && <NewStudent onCreated={st => { setAdding(false); onOpen(st); }} />}
+      {loadingDebts && <p className="text-sm text-slate-400">Calculando adeudos de cada alumna…</p>}
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="px-3 py-2">Nombre</th><th className="px-3 py-2">Edad</th>
-            <th className="px-3 py-2">Clases</th><th className="px-3 py-2">Teléfono</th><th className="px-3 py-2">ID EVO</th></tr></thead>
+            <th className="px-3 py-2">{kind === 'inactivas' ? 'Baja' : 'Plan y clases'}</th><th className="px-3 py-2">Teléfono</th>
+            {['deudoras', 'cumplidoras', 'activas'].includes(kind) && debts && <th className="px-3 py-2 text-right">Debe hoy</th>}</tr></thead>
           <tbody>{rows.map(s => (
             <tr key={s.id} className="cursor-pointer border-t hover:bg-slate-50" onClick={() => onOpen(s)}>
-              <td className="px-3 py-2 font-medium"><span className="flex items-center gap-2"><Photo path={s.photo_path} size={28} />{s.full_name}{!s.is_active && <span className="text-xs text-slate-400">inactiva</span>}</span></td>
+              <td className="px-3 py-2 font-medium"><span className="flex items-center gap-2"><Photo path={s.photo_path} size={30} />{s.full_name}</span></td>
               <td className="px-3 py-2">{age(s.birth_date)}</td>
-              <td className="px-3 py-2">{cur.filter(e => e.student_id === s.id).map(e => `${e.c.activity} ${e.c.start_time} (${e.weekdays.map(w => WD[w]).join(', ')})`).join(' · ') || '—'}</td>
-              <td className="px-3 py-2">{s.phone ?? '—'}</td><td className="px-3 py-2 text-slate-500">{s.evo_id ?? '—'}</td>
+              <td className="px-3 py-2 text-xs">{kind === 'inactivas' ? <span>{s.withdrawn_on ?? '—'}{s.withdrawal_reason ? ` · ${s.withdrawal_reason}` : ''}</span>
+                : <>{plans[s.id] && <span className="block font-medium text-slate-700">{plans[s.id]}</span>}
+                  {cur.filter(e => e.student_id === s.id).map(e => `${e.c.activity} ${e.c.start_time} (${e.weekdays.map(w => WD[w]).join(', ')})`).join(' · ') || (plans[s.id] ? '' : <span className="text-slate-400">sin plan</span>)}</>}</td>
+              <td className="px-3 py-2 text-xs">{s.guardian_phone || s.phone || '—'}</td>
+              {['deudoras', 'cumplidoras', 'activas'].includes(kind) && debts && <td className={`px-3 py-2 text-right ${owes(s.id) ? 'font-semibold text-red-700' : 'text-green-700'}`}>{owes(s.id) ? formatMXN(debts[s.id]) : '✓'}</td>}
             </tr>))}
-            {!rows.length && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">Sin alumnas. Impórtalas desde EVO.</td></tr>}
+            {!rows.length && !loadingDebts && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">{kind === 'deudoras' ? 'Nadie debe. 🎉' : 'Nadie en esta lista.'}</td></tr>}
           </tbody>
         </table>
       </div>
@@ -565,28 +617,47 @@ function EvoImport({ onDone }: { onDone: () => void }) {
 }
 
 // ---------------------------------------------------------------- Ficha
-function StudentCard({ s, classes, enr, canNotes, canCfg, onClose, onChanged }:
+const REASONS = ['Cambio de domicilio', 'Motivos económicos', 'Horarios', 'Cambió de actividad o deporte', 'Lesión o salud', 'Insatisfacción con el servicio', 'Vacaciones / temporada', 'Sin respuesta (dejó de venir)', 'Otro'];
+const daysSince = (iso: string | null | undefined) => iso ? Math.max(0, Math.round((Date.parse(todayMx()) - Date.parse(iso.slice(0, 10))) / 864e5)) : null;
+
+function StudentCard({ s: s0, classes, enr, canNotes, canCfg, onClose, onChanged }:
   { s: Stu; classes: Cls[]; enr: Enr[]; canNotes: boolean; canCfg: boolean; onClose: () => void; onChanged: () => void }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
+  const [s, setS] = useState<Stu>(s0);
+  const [tab, setTab] = usePersisted('ficha.tab', 'perfil');
   const [month, setMonth] = useState(todayMx().slice(0, 7));
   const [att, setAtt] = useState<Att[]>([]); const [notes, setNotes] = useState<Note[]>([]);
   const [body, setBody] = useState(''); const [msg, setMsg] = useState<string | null>(null);
+  const [bal, setBal] = useState<Balance | null>(null); const [log, setLog] = useState<{ action: string; reason: string | null; note: string | null; author_name: string | null; created_at: string; last_month: string | null }[]>([]);
+  const [plan, setPlan] = useState<string>(''); const [withdraw, setWithdraw] = useState(false);
+  const canBill = ['view', 'edit', 'configure'].some(x => can('billing', x)) || ['view', 'edit'].some(x => can('cashbox', x));
+  const canManage = canCfg || can('billing', 'edit');
+  const reloadMe = useCallback(async () => { const r = await supabase.from('students').select('*').eq('id', s0.id).single(); if (r.data) setS(r.data as Stu); }, [s0.id]);
   const load = useCallback(async () => {
     const end = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).toISOString().slice(0, 10);
-    const [a, n] = await Promise.all([
+    const [a, n, l, sub] = await Promise.all([
       supabase.from('student_attendance_latest').select('*').eq('student_id', s.id).gte('date', month + '-01').lte('date', end).order('date'),
-      supabase.from('student_notes').select('*').eq('student_id', s.id).order('created_at', { ascending: false })]);
-    setAtt(((a.data as Att[]) ?? []).filter(x => !x.annulled)); setNotes((n.data as Note[]) ?? []);
+      supabase.from('student_notes').select('*').eq('student_id', s.id).order('created_at', { ascending: false }),
+      supabase.from('student_status_log').select('action,reason,note,author_name,created_at,last_month').eq('student_id', s.id).order('created_at', { ascending: false }),
+      supabase.from('subscriptions').select('plan_id,start_month,end_month,plans(discipline,name)').eq('student_id', s.id).is('cancelled_at', null).order('start_month', { ascending: false })]);
+    setAtt(((a.data as Att[]) ?? []).filter(x => !x.annulled)); setNotes((n.data as Note[]) ?? []); setLog(l.data ?? []);
+    const cur = ((sub.data ?? []) as unknown as { start_month: string; end_month: string | null; plans: { discipline: string; name: string } | null }[])
+      .find(x => x.start_month.slice(0, 7) <= todayMx().slice(0, 7) && (!x.end_month || x.end_month.slice(0, 7) >= todayMx().slice(0, 7)));
+    setPlan(cur?.plans ? `${cur.plans.discipline} · ${cur.plans.name}` : '');
   }, [s.id, month]);
   useEffect(() => { load(); }, [load]);
+  const loadBal = useCallback(() => { if (canBill && s.kind !== 'prospecto') studentBalance(s).then(setBal); }, [s, canBill]);
+  useEffect(() => { loadBal(); }, [loadBal]);
+  const changed = () => { reloadMe(); load(); loadBal(); onChanged(); };
 
   const mine = classes.flatMap(c => rosterFor(enr, c.id, month + '-01').filter(e => e.student_id === s.id).map(e => ({ ...e, c })));
-  // Días que le tocaban en el mes (hasta hoy) vs. lo registrado
   const today = todayMx(); const daysInMonth = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).getUTCDate();
   const expected = mine.flatMap(e => Array.from({ length: daysInMonth }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`)
     .filter(d => d <= today && e.weekdays.includes(dow(d))).map(d => ({ d, c: e.c })));
   const came = att.filter(a => a.arrival).length, missed = att.filter(a => !a.arrival).length, extra = att.filter(a => a.extra && a.arrival).length;
   const unmarked = expected.filter(x => !att.some(a => a.date === x.d && a.class_id === x.c.id)).length;
+  const net = bal ? bal.owed + bal.pendingReceipts - bal.credit : 0;
+  const since = daysSince(s.enrolled_on ?? s.became_student_on ?? null);
 
   async function addNote() {
     setMsg(null);
@@ -598,44 +669,97 @@ function StudentCard({ s, classes, enr, canNotes, canCfg, onClose, onChanged }:
     const { error } = await supabase.from('student_notes').update({ deleted_at: new Date().toISOString() }).eq('id', n.id);
     if (error) setMsg(error.message); else load();
   }
-  async function toggleActive() {
-    const { error } = await supabase.from('students').update({ is_active: !s.is_active }).eq('id', s.id);
-    if (error) setMsg(error.message); else { onChanged(); onClose(); }
+  async function reactivate() {
+    if (!confirm(`¿Reactivar a ${s.full_name}? Después asígnale su plan en la pestaña Plan y clases.`)) return;
+    const { error } = await supabase.rpc('reactivate_student', { p_student: s.id }); if (error) setMsg(error.message); else { setTab('plan'); changed(); }
   }
 
+  const status = s.kind === 'prospecto' ? { l: 'Prospecto', c: 'bg-amber-100 text-amber-800' } : !s.is_active ? { l: 'Baja', c: 'bg-slate-200 text-slate-600' }
+    : net > 0 ? { l: 'Debe', c: 'bg-red-100 text-red-700' } : plan ? { l: 'Al corriente', c: 'bg-green-100 text-green-700' } : { l: 'Sin plan', c: 'bg-sky-100 text-sky-700' };
+  const tabs: [string, string][] = [['perfil', 'Perfil'], ...(s.kind !== 'prospecto' ? [['plan', 'Plan y clases'] as [string, string]] : []),
+    ...(canBill && s.kind !== 'prospecto' ? [['cuenta', 'Estado de cuenta'] as [string, string]] : []), ['asistencia', 'Asistencia'],
+    ...(canNotes || notes.length ? [['notas', `Notas${notes.filter(n => !n.deleted_at).length ? ` (${notes.filter(n => !n.deleted_at).length})` : ''}`] as [string, string]] : []), ['historial', 'Historial']];
+  const cur = tabs.some(t => t[0] === tab) ? tab : 'perfil';
+
   return (
-    <Modal title={`${s.full_name} · ${age(s.birth_date)}`} onClose={onClose} wide>
-      <StudentProfile s={s} onChanged={onChanged} />
-      <div className="text-sm">{mine.length ? mine.map(e => <span key={e.class_id} className="mr-2 rounded-full bg-slate-100 px-2 py-1">{e.c.activity} {e.c.start_time} · {e.weekdays.map(w => WD[w]).join(', ')}</span>)
-        : <span className="text-slate-400">Sin clases ese mes</span>}</div>
+    <Modal title={<span className="flex items-center gap-3"><Photo path={s.photo_path} size={44} /><span>{s.full_name}
+      <span className="block text-xs font-normal text-slate-500">{age(s.birth_date)}{since !== null && s.is_active && s.kind !== 'prospecto' ? ` · alumna desde hace ${since} días` : ''}{plan ? ` · ${plan}` : ''}</span></span></span>} onClose={onClose} wide>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${status.c}`}>{status.l}</span>
+        {bal && s.kind !== 'prospecto' && <span className={`rounded-full px-3 py-1 text-xs font-semibold ${net > 0 ? 'bg-red-50 text-red-700' : net < 0 ? 'bg-green-50 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+          {net > 0 ? `Debe ${formatMXN(net)}` : net < 0 ? `${formatMXN(-net)} a favor` : 'Sin adeudos'}</span>}
+        {!s.is_active && s.withdrawal_reason && <span className="text-xs text-slate-500">Baja {s.withdrawn_on}: {s.withdrawal_reason}</span>}
+        <span className="ml-auto flex gap-2">
+          {can('cashbox', 'edit') && s.is_active && <button className="rounded-xl bg-green-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:brightness-110"
+            onClick={() => { goTo('caja', { 'caja.preselect': s.id, 'caja.sucursal': JSON.stringify(s.company_id), 'caja.tab': JSON.stringify('cobrar') }); onClose(); }}>🛒 Nueva venta</button>}
+          {canManage && s.kind !== 'prospecto' && (s.is_active
+            ? <button className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setWithdraw(true)}>Dar de baja</button>
+            : <button className="rounded-xl border border-green-300 px-3 py-1.5 text-sm text-green-700 hover:bg-green-50" onClick={reactivate}>Reactivar</button>)}
+        </span>
+      </div>
+      {withdraw && <Withdraw s={s} onDone={() => { setWithdraw(false); changed(); }} onCancel={() => setWithdraw(false)} />}
+      <ModuleTabs id="ficha" tabs={tabs} value={cur} onChange={setTab} />
 
-      {s.kind !== 'prospecto' && <StudentPlans s={s} onChanged={onChanged} />}
-
-      <div className="space-y-2 border-t pt-3">
-        <div className="flex flex-wrap items-center gap-3"><h4 className="text-sm font-semibold">Asistencia</h4>
-          <input type="month" className="rounded border px-2 py-1 text-sm" value={month} onChange={e => setMonth(e.target.value)} />
+      {cur === 'perfil' && <StudentProfile s={s} onChanged={changed} />}
+      {cur === 'plan' && <><div className="text-sm">{mine.length ? mine.map(e => <span key={e.class_id} className="mr-2 inline-block rounded-full bg-slate-100 px-2 py-1">{e.c.activity} {e.c.start_time} · {e.weekdays.map(w => WD[w]).join(', ')}</span>)
+        : <span className="text-slate-400">Sin clases este mes</span>}</div><StudentPlans s={s} onChanged={changed} /></>}
+      {cur === 'cuenta' && <StudentAccount s={s} balance={bal} />}
+      {cur === 'asistencia' && <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-3"><input type="month" className="rounded-lg border px-2 py-1 text-sm" value={month} onChange={e => setMonth(e.target.value)} />
           <span className="text-sm"><span className="text-green-700">{came} vino</span> · <span className="text-red-700">{missed} faltó</span>
             {extra > 0 && <> · <span className="text-amber-700">{extra} en día que no le tocaba</span></>} · {unmarked} sin registro · le tocaban {expected.length}</span></div>
         <div className="flex flex-wrap gap-1 text-xs">{att.map(a => (
-          <span key={a.date + a.class_id} className={`rounded px-2 py-1 ${a.arrival ? (a.extra ? 'bg-amber-100' : 'bg-green-100') : 'bg-red-100'}`}>
-            {a.date.slice(8)} {WD[dow(a.date)]} {a.arrival ?? 'faltó'}</span>))}</div>
-      </div>
-
-      {(canNotes || notes.length > 0) && (
-        <div className="space-y-2 border-t pt-3">
-          <h4 className="text-sm font-semibold">Notas internas <span className="font-normal text-slate-500">(sólo maestros y dirección)</span></h4>
-          {canNotes && <div className="flex gap-2"><textarea className={`${field} flex-1`} rows={2} value={body} onChange={e => setBody(e.target.value)} placeholder="Qué observaste, en qué va, qué trabajar…" />
-            <button disabled={!body.trim()} className="self-end rounded-lg bg-brand px-3 py-2 text-sm text-white disabled:opacity-50" onClick={addNote}>Guardar</button></div>}
-          {notes.map(n => (
-            <div key={n.id} className={`rounded-lg border p-2 text-sm ${n.deleted_at ? 'border-dashed bg-slate-50 text-slate-400' : ''}`}>
-              <p className="whitespace-pre-wrap">{n.body}</p>
-              <p className="mt-1 flex text-xs text-slate-500">{n.author_name ?? '—'} · {new Date(n.created_at).toLocaleString('es-MX')}
-                {n.deleted_at && <span className="ml-2">· borrada {new Date(n.deleted_at).toLocaleDateString('es-MX')}</span>}
-                {!n.deleted_at && (n.created_by === user?.id || user?.role === 'director') && <button className="ml-auto text-red-600" onClick={() => delNote(n)}>Borrar</button>}</p>
-            </div>))}
-        </div>)}
+          <span key={a.date + a.class_id} className={`rounded-lg px-2 py-1 ${a.arrival ? (a.extra ? 'bg-amber-100' : 'bg-green-100') : 'bg-red-100'}`}>
+            {+a.date.slice(8)} {WD[dow(a.date)]} {a.arrival ?? 'faltó'}</span>))}{!att.length && <span className="text-slate-400">Sin registros este mes.</span>}</div>
+      </div>}
+      {cur === 'notas' && <div className="space-y-2">
+        <p className="text-xs text-slate-500">Notas internas: sólo maestros y dirección.</p>
+        {canNotes && <div className="flex gap-2"><textarea className={`${field} flex-1`} rows={2} value={body} onChange={e => setBody(e.target.value)} placeholder="Qué observaste, en qué va, qué trabajar…" />
+          <button disabled={!body.trim()} className="self-end rounded-lg bg-brand px-3 py-2 text-sm text-white disabled:opacity-50" onClick={addNote}>Guardar</button></div>}
+        {notes.map(n => (
+          <div key={n.id} className={`rounded-xl border p-3 text-sm ${n.deleted_at ? 'border-dashed bg-slate-50 text-slate-400' : 'bg-white'}`}>
+            <p className="whitespace-pre-wrap">{n.body}</p>
+            <p className="mt-1 flex text-xs text-slate-500">{n.author_name ?? '—'} · {new Date(n.created_at).toLocaleString('es-MX')}
+              {n.deleted_at && <span className="ml-2">· borrada {new Date(n.deleted_at).toLocaleDateString('es-MX')}</span>}
+              {!n.deleted_at && (n.created_by === user?.id || user?.role === 'director') && <button className="ml-auto text-red-600" onClick={() => delNote(n)}>Borrar</button>}</p>
+          </div>))}
+        {!notes.length && <p className="text-sm text-slate-400">Sin notas.</p>}
+      </div>}
+      {cur === 'historial' && <div className="space-y-1 text-sm">
+        {log.map((x, i) => <p key={i} className="rounded-lg bg-slate-50 px-3 py-2"><b className={x.action === 'baja' ? 'text-red-700' : 'text-green-700'}>{x.action === 'baja' ? 'Baja' : x.action === 'reactivacion' ? 'Reactivación' : 'Inscripción'}</b>
+          {x.reason ? ` · ${x.reason}` : ''}{x.last_month ? ` · último mes ${monthName(x.last_month.slice(0, 7))}` : ''}{x.note ? ` · "${x.note}"` : ''}
+          <span className="block text-xs text-slate-500">{new Date(x.created_at).toLocaleString('es-MX')} · {x.author_name}</span></p>)}
+        {s.enrolled_on && <p className="rounded-lg bg-slate-50 px-3 py-2"><b className="text-green-700">Inscripción</b> · {s.enrolled_on}</p>}
+        {!log.length && !s.enrolled_on && <p className="text-slate-400">Sin movimientos.</p>}
+        <p className="text-xs text-slate-500">Los cambios de plan, pagos y becas están en sus pestañas.</p>
+      </div>}
       {msg && <p className="rounded bg-red-50 p-2 text-sm text-red-700">{msg}</p>}
-      {canCfg && <div className="border-t pt-3 text-right"><button className="text-sm text-slate-600" onClick={toggleActive}>{s.is_active ? 'Marcar como inactiva' : 'Reactivar'}</button></div>}
     </Modal>
+  );
+}
+
+function Withdraw({ s, onDone, onCancel }: { s: Stu; onDone: () => void; onCancel: () => void }) {
+  const [reason, setReason] = useState(''); const [other, setOther] = useState(''); const [note, setNote] = useState(''); const [last, setLast] = useState(todayMx().slice(0, 7));
+  const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  async function save() {
+    setBusy(true); setMsg(null);
+    const { error } = await supabase.rpc('withdraw_student', { p_student: s.id, p_reason: reason === 'Otro' ? other.trim() || 'Otro' : reason, p_note: note, p_last_month: `${last}-01` });
+    setBusy(false); if (error) setMsg(error.message); else onDone();
+  }
+  return (
+    <div className="space-y-2 rounded-xl border-2 border-red-200 bg-red-50/40 p-3 text-sm">
+      <h4 className="font-semibold">Dar de baja a {s.full_name}</h4>
+      <div className="flex flex-wrap gap-1.5">{REASONS.map(r => <button key={r} onClick={() => setReason(r)}
+        className={`rounded-full border px-3 py-1 text-xs ${reason === r ? 'border-red-400 bg-red-100 font-semibold text-red-800' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>{r}</button>)}</div>
+      {reason === 'Otro' && <input className={`${field} w-full`} placeholder="¿Cuál?" value={other} onChange={e => setOther(e.target.value)} />}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs">Último mes que viene<input type="month" className={`${field} block`} value={last} onChange={e => setLast(e.target.value)} /></label>
+        <label className="grow text-xs">Comentario<input className={`${field} block w-full`} placeholder="Qué dijo la mamá, si regresa…" value={note} onChange={e => setNote(e.target.value)} /></label>
+      </div>
+      <p className="text-xs text-slate-600">Sus planes terminan en ese mes (ya no se le cobra después) y pasa a la lista de inactivas. Lo que deba hasta ese mes se conserva.</p>
+      <div className="flex gap-2"><button disabled={!reason || busy} className="rounded-lg bg-red-600 px-3 py-1.5 text-white disabled:opacity-50" onClick={save}>Dar de baja</button>
+        <button className="text-slate-500" onClick={onCancel}>Cancelar</button></div>
+      {msg && <p className="text-red-700">{msg}</p>}
+    </div>
   );
 }
